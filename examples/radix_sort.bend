@@ -1,98 +1,122 @@
-data Map_ = Free | Used | (Both a b)
-data Arr = Null | (Leaf x) | (Node a b)
+type MyMap:
+  Free
+  Used
+  Both { ~a: MyMap, ~b: MyMap }
 
-(Swap s a b) = switch s {
-  0: (Map_/Both a b)
-  _: (Map_/Both b a)
-}
+type Arr(t):
+  Null
+  Leaf { a: t }
+  Node { ~a: Arr(t), ~b: Arr(t) }
 
-# Sort : Arr -> Arr
-(Sort t) = (ToArr 0 (ToMap t))
+def swap(s: u24, a: MyMap, b: MyMap) -> MyMap:
+  switch s:
+    case 0:
+      return MyMap/Both{ a: a, b: b }
+    case _:
+      return MyMap/Both{ a: b, b: a }
+ 
 
-# ToMap : Arr -> Map
-(ToMap Arr/Null)       = Map_/Free
-(ToMap (Arr/Leaf a))   = (Radix a)
-(ToMap (Arr/Node a b)) = (Merge (ToMap a) (ToMap b))
+def sort(t: Arr(u24)) -> Arr(u24):
+  return to_arr(0, to_map(t))
 
-# ToArr : U60 -> Map -> Arr
-(ToArr x Map_/Free) = Arr/Null
-(ToArr x Map_/Used) = (Arr/Leaf x)
-(ToArr x (Map_/Both a b)) =
-  let a = (ToArr (+ (* x 2) 0) a)
-  let b = (ToArr (+ (* x 2) 1) b)
-  (Arr/Node a b)
+def to_map(t: Arr(u24)) -> MyMap:
+  match t:
+    case Arr/Null:
+      return MyMap/Free
+    case Arr/Leaf:
+      return radix(t.a)
+    case Arr/Node:
+      return merge(to_map(t.a), to_map(t.b))
 
-# Merge : Map -> Map -> Map
-(Merge Map_/Free       Map_/Free)       = Map_/Free
-(Merge Map_/Free       Map_/Used)       = Map_/Used
-(Merge Map_/Used       Map_/Free)       = Map_/Used
-(Merge Map_/Used       Map_/Used)       = Map_/Used
-(Merge Map_/Free       (Map_/Both c d)) = (Map_/Both c d)
-(Merge (Map_/Both a b) Map_/Free)       = (Map_/Both a b)
-(Merge (Map_/Both a b) (Map_/Both c d)) = (Map_/Both (Merge a c) (Merge b d))
-(Merge (Map_/Both a b) Map_/Used) = *
-(Merge Map_/Used (Map_/Both a b)) = *
+def to_arr(x: u24, m: MyMap) -> Arr(u24):
+  match m:
+    case MyMap/Free:
+      return Arr/Null
+    case MyMap/Used:
+      return Arr/Leaf{ a: x }
+    case MyMap/Both:
+      return Arr/Node{ a: to_arr(x * 2, m.a), b: to_arr(x * 2 + 1, m.b) }
 
-# Radix : U60 -> Map
-(Radix n) =
-  let r = Map_/Used
-  let r = (Swap (& n 1) r Map_/Free)
-  let r = (Swap (& n 2) r Map_/Free)
-  let r = (Swap (& n 4) r Map_/Free)
-  let r = (Swap (& n 8) r Map_/Free)
-  let r = (Swap (& n 16) r Map_/Free)
-  (Radix2 n r)
+def merge(a: MyMap, b: MyMap) -> MyMap:
+  match a:
+    case MyMap/Free:
+      return b
+    case MyMap/Used:
+      return MyMap/Used
+    case MyMap/Both:
+      match b:
+        case MyMap/Free:
+          return a
+        case MyMap/Used:
+          return MyMap/Used
+        case MyMap/Both:
+          return MyMap/Both{ a: merge(a.a, b.a), b: merge(a.b, b.b) }
+  
+def radix(n: u24) -> MyMap:
+  r = MyMap/Used
+  r = swap(n & 1, r, MyMap/Free)
+  r = swap(n & 2, r, MyMap/Free)
+  r = swap(n & 4, r, MyMap/Free)
+  r = swap(n & 8, r, MyMap/Free)
+  r = swap(n & 16, r, MyMap/Free)
+  r = swap(n & 32, r, MyMap/Free)
+  r = swap(n & 64, r, MyMap/Free)
+  r = swap(n & 128, r, MyMap/Free)
+  r = swap(n & 256, r, MyMap/Free)
+  r = swap(n & 512, r, MyMap/Free)
+  return radix2(n, r)
 
-(Radix2 n r) =
-  let r = (Swap (& n 32) r Map_/Free)
-  let r = (Swap (& n 64) r Map_/Free)
-  let r = (Swap (& n 128) r Map_/Free)
-  let r = (Swap (& n 256) r Map_/Free)
-  let r = (Swap (& n 512) r Map_/Free)
-  (Radix3 n r)
+# At the moment, we need to manually break very large functions into smaller ones
+# if we want to run this program on the GPU.
+# In a future version of Bend, we will be able to do this automatically.
+def radix2(n: u24, r: MyMap) -> MyMap:
+  r = swap(n & 1024, r, MyMap/Free)
+  r = swap(n & 2048, r, MyMap/Free)
+  r = swap(n & 4096, r, MyMap/Free)
+  r = swap(n & 8192, r, MyMap/Free)
+  r = swap(n & 16384, r, MyMap/Free)
+  r = swap(n & 32768, r, MyMap/Free)
+  r = swap(n & 65536, r, MyMap/Free)
+  r = swap(n & 131072, r, MyMap/Free)
+  r = swap(n & 262144, r, MyMap/Free)
+  r = swap(n & 524288, r, MyMap/Free)
+  return radix3(n, r)
 
-(Radix3 n r) =
-  let r = (Swap (& n 1024) r Map_/Free)
-  let r = (Swap (& n 2048) r Map_/Free)
-  let r = (Swap (& n 4096) r Map_/Free)
-  let r = (Swap (& n 8192) r Map_/Free)
-  let r = (Swap (& n 16384) r Map_/Free)
-  (Radix4 n r)
+def radix3(n: u24, r: MyMap) -> MyMap:
+  r = swap(n & 1048576, r, MyMap/Free)
+  r = swap(n & 2097152, r, MyMap/Free)
+  r = swap(n & 4194304, r, MyMap/Free)
+  r = swap(n & 8388608, r, MyMap/Free)
+  return r
 
-(Radix4 n r) =
-  let r = (Swap (& n 32768) r Map_/Free)
-  let r = (Swap (& n 65536) r Map_/Free)
-  let r = (Swap (& n 131072) r Map_/Free)
-  let r = (Swap (& n 262144) r Map_/Free)
-  let r = (Swap (& n 524288) r Map_/Free)
-  (Radix5 n r)
+def reverse(t: Arr(u24)) -> Arr(u24):
+  match t:
+    case Arr/Null:
+      return Arr/Null
+    case Arr/Leaf:
+      return t
+    case Arr/Node:
+      return Arr/Node{ a: reverse(t.b), b: reverse(t.a) }
 
-(Radix5 n r) =
-  let r = (Swap (& n 1048576) r Map_/Free)
-  let r = (Swap (& n 2097152) r Map_/Free)
-  let r = (Swap (& n 4194304) r Map_/Free)
-  let r = (Swap (& n 8388608) r Map_/Free)
-  r
+def sum(t: Arr(u24)) -> u24:
+  match t:
+    case Arr/Null:
+      return 0
+    case Arr/Leaf:
+      return t.a
+    case Arr/Node:
+      return sum(t.a) + sum(t.b)
 
+def gen(n: u24) -> Arr(u24):
+  return gen_go(n, 0)
 
-# Reverse : Arr -> Arr
-(Reverse Arr/Null)       = Arr/Null
-(Reverse (Arr/Leaf a))   = (Arr/Leaf a)
-(Reverse (Arr/Node a b)) = (Arr/Node (Reverse b) (Reverse a))
+def gen_go(n: u24, x: u24) -> Arr(u24):
+  switch n:
+    case 0:
+      return Arr/Leaf{ a: x }
+    case _:
+      a = x * 2
+      b = x * 2 + 1
+      return Arr/Node{ a: gen_go(n-1, a), b: gen_go(n-1, b) }
 
-# Sum : Arr -> U60
-(Sum Arr/Null)       = 0
-(Sum (Arr/Leaf x))   = x
-(Sum (Arr/Node a b)) = (+ (Sum a) (Sum b))
-
-# Gen : U60 -> Arr
-(Gen n) = (Gen.go n 0)
-  (Gen.go n x) = switch n {
-    0: (Arr/Leaf x)
-    _:
-      let a = (* x 2)
-      let b = (| (* x 2) 1)
-      (Arr/Node (Gen.go n-1 a) (Gen.go n-1 b))
-  }
-
-Main = (Sum (Sort (Reverse (Gen 4))))
+Main: u24 = (sum (sort(reverse(gen 4))))

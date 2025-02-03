@@ -1,5 +1,4 @@
-Bend in X minutes - the ultimate guide!
-=======================================
+# Bend in X minutes - the ultimate guide!
 
 Bend is a high-level, massively parallel programming language. That means it
 feels like Python, but scales like CUDA. It runs on CPUs and GPUs, and you don't
@@ -20,93 +19,129 @@ explanation, see HVM1's classic
 [HOW.md](https://github.com/HigherOrderCO/HVM/blob/master/guide/HOW.md). But if
 you just want to dive straight into action - this guide is for you. Let's go!
 
-Installation
-------------
+## Installation
 
-To use Bend, first, install [Rust nightly](https://www.oreilly.com/library/view/rust-programming-by/9781788390637/e07dc768-de29-482e-804b-0274b4bef418.xhtml). Then, install HVM2 and Bend itself with:
+### Install dependencies
 
-```
-cargo +nightly install hvm
-cargo +nightly install bend-lang
-```
+#### On Linux
 
-To test if it worked, type:
+```sh
+# Install Rust if you haven't it already.
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-```
-bend --help
+# For the C version of Bend, use GCC. We recommend a version up to 12.x.
+sudo apt install gcc
 ```
 
-For GPU support, you also need the CUDA toolkit (CUDA and `nvcc`) version `12.X`. **It needs to be installed _before_ you install HVM.**
-At the moment, **only Nvidia GPUs** are supported.
+For the CUDA runtime [install the CUDA toolkit for Linux](https://developer.nvidia.com/cuda-downloads?target_os=Linux) version 12.x.
 
-Hello, World!
--------------
+#### On Mac
 
-As we said, Bend *feels* like Python - in some ways. It is high-level, you can
+```sh
+# Install Rust if you haven't it already.
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# For the C version of Bend, use GCC. We recommend a version up to 12.x.
+brew install gcc
+```
+
+### Install Bend
+
+1. Install HVM2 by running:
+
+```sh
+# HVM2 is HOC's massively parallel Interaction Combinator evaluator.
+cargo install hvm
+
+# This ensures HVM is correctly installed and accessible.
+hvm --version
+```
+
+2. Install Bend by running:
+
+```sh
+# This command will install Bend
+cargo install bend-lang
+
+# This ensures Bend is correctly installed and accessible.
+bend --version
+```
+
+## Hello, World!
+
+As we said, Bend _feels_ like Python - in some ways. It is high-level, you can
 easily create objects and lists, there are ifs and loops. Yet, it is different:
 there is some Haskell in it, in the sense algebraic datatypes, pattern-matching
-and recursion play an important role. This is how its  `"Hello, world!"` looks:
+and recursion play an important role. This is how its `"Hello, world!"` looks:
 
 ```python
 def main():
   return "Hello, world!"
 ```
+To run the program above, type:
+```
+bend run-rs main.bend
+```
+Wait - there is something strange there. Why `return`, not `print`? Well, _for
+now_ (you'll read these words a lot), Bend's IO is in an experimental stage. We plan on
+fully introducing it very soon! Nevertheless, here's an example on how you can use IO on bend to print `"Hello, world!"`:
 
-Wait - there is something strange there. Why `return`, not `print`? Well, *for
-now* (you'll read these words a lot), Bend doesn't have IO. We plan on
-introducing it very soon! So, *for now*, all you can do is perform computations,
-and see results. To run the program above, type:
+```python
+def main() -> IO(u24):
+  with IO:
+    * <- IO/print("Hello, world!\n")
+    return wrap(0)
+```
+To run the program above, type:
 
 ```
-bend run main.bend
+bend run-c main.bend
 ```
 
-If all goes well, you should see `"Hello, world!"`. The `bend run` command uses
-the reference interpreter, which is slow. In a few moments, we'll teach you how
-to run your code in parallel, on both CPUs and GPUs. For now, let's learn some
+If all goes well, you should see `"Hello, world!"` in both cases. The `bend run-rs` command uses
+the reference interpreter, which is slow, whereas the `bend run-c` command uses the much faster C interpreter, but bend can run even faster! In a few moments, we'll teach you how to run your code in parallel, on both CPUs and GPUs. For now, let's learn some
 fundamentals!
 
-Basic Functions and Datatypes
------------------------------
+## Basic Functions and Datatypes
 
 In Bend, functions are pure: they receive something, and they return something.
 That's all. Here is a function that tells you how old you are:
 
 ```python
-def am_i_old(age):
+def am_i_old(age: u24) -> String:
   if age < 18:
     return "you're a kid"
   else:
     return "you're an adult"
 
-def main():
+def main() -> String:
   return am_i_old(32)
 ```
 
-That is simple enough, isn't it? Here is one that returns the distance between
+That is simple enough, isn't it? Here is one that returns the euclidean distance between
 two points:
 
 ```python
-def distance(ax, ay, bx, by):
+def distance(ax: f24, ay: f24, bx: f24, by: f24) -> f24:
   dx = bx - ax
   dy = by - ay
   return (dx * dx + dy * dy) ** 0.5
 
-def main():
+def main() -> f24:
   return distance(10.0, 10.0, 20.0, 20.0)
 ```
 
 This isn't so pretty. Could we use tuples instead? Yes:
 
 ```python
-def distance(a, b):
+def distance(a: (f24, f24), b: (f24, f24)) -> f24:
   (ax, ay) = a
   (bx, by) = b
   dx = bx - ax
   dy = by - ay
   return (dx * dx + dy * dy) ** 0.5
 
-def main():
+def main() -> f24:
   return distance((10.0, 10.0), (20.0, 20.0))
 ```
 
@@ -117,21 +152,21 @@ objects themselves. This is how we create a 2D vector:
 ```python
 object V2 { x, y }
 
-def distance(a, b):
+def distance(a: V2, b: V2) -> f24:
   open V2: a
   open V2: b
   dx = b.x - a.x
   dy = b.y - a.y
   return (dx * dx + dy * dy) ** 0.5
 
-def main():
+def main() -> f24:
   return distance(V2 { x: 10.0, y: 10.0 }, V2 { x: 20.0, y: 20.0 })
 ```
 
 This doesn't look too different, does it? What is that `open` thing, though? It
-just tells Bend to *consume* the vector, `a`, "splitting" it into its
+just tells Bend to _consume_ the vector, `a`, "splitting" it into its
 components, `a.x` and `a.y`. Is that really necessary? Actually, no - not
-really. But, *for now*, it is. This has to do with the fact Bend is an affine
+really. But, _for now_, it is. This has to do with the fact Bend is an affine
 language, which... well, let's not get into that. For now, just remember we
 need `open` to access fields.
 
@@ -149,20 +184,20 @@ type Shape:
   Circle { radius }
   Rectangle { width, height }
 
-def area(shape):
+def area(shape: Shape) -> f24:
   match shape:
     case Shape/Circle:
       return 3.14 * shape.radius ** 2.0
     case Shape/Rectangle:
       return shape.width * shape.height
 
-def main:
+def main() -> f24:
   return area(Shape/Circle { radius: 10.0 })
 ```
 
 In this example, `Shape` is a datatype with two variants: `Circle` and
-`Rectangle`.  The `area` function uses pattern matching to handle each variant
-appropriately.  Just like objects need `open`, datatypes need `match`, which
+`Rectangle`. The `area` function uses pattern matching to handle each variant
+appropriately. Just like objects need `open`, datatypes need `match`, which
 give us access to fields in each respective case.
 
 Datatypes are very general. From matrices, to JSON, to quadtrees, every type of
@@ -181,15 +216,15 @@ represents a concatenation between an element (`head`) and another list
 (`tail`). That way, the `[1,2,3]` list could be written as:
 
 ```python
-def main:
-  my_list = List/Cons { head: 1, tail: List/Cons { head: 2, tail: List/Cons { head: 3, tail: List/Nil }}}
+def main() -> List(u24):
+  my_list = List/Cons{head: 1, tail: List/Cons{head: 2, tail: List/Cons{head: 3, tail: List/Nil}}}
   return my_list
 ```
 
 Obviously - that's terrible. So, you can write just instead:
 
 ```python
-def main:
+def main() -> List(u24):
   my_list = [1, 2, 3]
   return my_list
 ```
@@ -199,7 +234,7 @@ to understand it is just the `List` datatype, which means we can operate on it
 using the `match` notation. For example:
 
 ```python
-def main:
+def main() -> u24:
   my_list = [1, 2, 3]
   match my_list:
     case List/Cons:
@@ -210,14 +245,17 @@ def main:
 
 Will return `1`, which is the first element.
 
+> **_NOTE:_** Despite creating lists with `[` `]`, the syntax used for accessing values as in `type[key]` is actually related to the `Map` built-in type.
+
 We also have a syntax sugar for strings in Bend, which is just a list of `u24`
 characters (UTF-16 encoded). The `"Hello, world!"` type we've seen used it!
-> **_NOTE:_**  The actual type used for strings is `String`, which has `String/Cons` and `String/Nil` just like `List` does.
+
+> **_NOTE:_** The actual type used for strings is `String`, which has `String/Cons` and `String/Nil` just like `List` does.
 
 Bend also has inline functions, which work just like Python:
 
 ```python
-def main:
+def main() -> u24:
   mul_2 = lambda x: x * 2
   return mul_2(7)
 ```
@@ -228,30 +266,35 @@ if you can somehow type that.
 You can also match on native numbers (`u24`) using the `switch` statement:
 
 ```python
-def slow_mul2(n):
+def slow_mul2(n: u24) -> u24:
   switch n:
     case 0:
       return 0
     case _:
-      return 2 * slow_mul2(n-1)
+      return 2 + slow_mul2(n-1)
+
+def main() -> u24:
+  return slow_mul2(7)
 ```
 
 The `if-else` syntax is a third option to branch, other than `match` and
 `switch`. It expects a `u24` (`1` for `true` and `0` for `false`):
 
 ```python
-def is_even(n):
+def is_even(n: u24) -> u24:
   if n % 2 == 0:
     return 1
   else:
     return 0
-```
-  
-*note - some types, like tuples, aren't being pretty-printed correctly after
-computation. this will be fixed in the next days (TM)*
 
-The Dreaded Immutability
-------------------------
+def main() -> u24:
+  return is_even(7)
+```
+
+_note - some types, like tuples, aren't being pretty-printed correctly after
+computation. This will be fixed in the future (TM)_
+
+## The Dreaded Immutability
 
 Finally, let's get straight to the fun part: how do we implement parallel
 algorithms with Bend? Just kidding. Before we get there, let's talk about loops.
@@ -261,23 +304,23 @@ Haskell: **variables are immutable**. Not "by default". They just **are**. For
 example, in Bend, we're not allowed to write:
 
 ```python
-def parity(x):
+def parity(x: u24) -> String:
   result = "odd"
   if x % 2 == 0:
     result = "even"
   return result
 ```
 
-... because that would mutate the `result` variable. Instead, we should write:
+... because that would require mutating the `result` variable. Instead, we should write:
 
 ```python
-def is_even(x):
+def is_even(x: u24) -> String:
   if x % 2 == 0:
     return "even"
   else:
     return "odd"
 
-def main:
+def main() -> String:
   return is_even(7)
 ```
 
@@ -288,7 +331,7 @@ live with it. But, wait... if variables are immutable... how do we even do
 loops? For example:
 
 ```python
-def sum(x):
+def sum(x: u24) -> u24:
   total = 0
   for i in range(10)
     total += i
@@ -296,12 +339,11 @@ def sum(x):
 ```
 
 Here, the entire way the algorithm works is by mutating the `total` variable.
-Without mutability, loops don't make sense. The good news is Bend has *something
-else* that is equally as - actually, more - powerful. And learning it is really
+Without mutability, loops don't make sense. The good news is Bend has _something
+else_ that is equally as - actually, more - powerful. And learning it is really
 worth your time. Let's do it!
 
-Folds and Bends
----------------
+## Folds and Bends
 
 ### Recursive Datatypes
 
@@ -309,12 +351,12 @@ Let's start by implementing a recursive datatype in Bend:
 
 ```python
 type Tree:
-  Node { ~lft, ~rgt }
-  Leaf { val }
+  Node { ~left, ~right }
+  Leaf { value }
 ```
 
 This defines a binary tree, with elements on leaves. Here, `~` flags a field as
-*recursive*. For example, the tree:
+_recursive_. For example, the tree:
 
 ```
   __/\__
@@ -325,50 +367,43 @@ This defines a binary tree, with elements on leaves. Here, `~` flags a field as
 Could be represented as:
 
 ```
-tree = Tree/Node {
-  lft: Tree/Node { lft: Tree/Leaf { val: 1 }, rgt: Tree/Leaf { val: 2 } },
-  rgt: Tree/Node { lft: Tree/Leaf { val: 3 }, rgt: Tree/Leaf { val: 4 } }
+tree = Tree/Node{
+  left:  Tree/Node{left: Tree/Leaf {value: 1}, right: Tree/Leaf {value: 2}},
+  right: Tree/Node{left: Tree/Leaf {value: 3}, right: Tree/Leaf {value: 4}},
 }
 ```
 
-That's ugly. Very soon, we'll add a syntax sugar to make this shorter:
+Binary trees are so useful in Bend that this type is already pre-defined in the
+language and has its own dedicated syntax:
 
+```py
+# ![a, b] => Equivalent to Tree/Node { left: a, right: b }
+# !x      => Equivalent to Tree/Leaf { value: x }
+tree = ![![!1, !2],![!3, !4]]
 ```
-tree = ![![1,2],![3,4]]
-```
-
-As usual, for now, we'll live with the longer version.
 
 ### Fold: consuming recursive datatypes
 
-Now, here's a question: how do we *sum* the elements of a tree? In Python, we
+Now, here's a question: how do we _sum_ the elements of a tree? In Python, we
 could just use a loop. In Bend, we don't have loops. Fortunately, there is
-another construct we can use: it's called `fold`, and it works like a *search
-and replace* for datatypes. For example, consider the code below:
-
+another construct we can use: it's called `fold`, and it works like a _search
+and replace_ for datatypes. For example, consider the code below:
 
 ```python
-type Tree:
-  Node { ~lft, ~rgt }
-  Leaf { val }
-
-def sum(tree):
+def sum(tree: Tree(u24)) -> u24:
   fold tree:
     case Tree/Node:
-      return tree.lft + tree.rgt
+      return tree.left + tree.right
     case Tree/Leaf:
-      return tree.val
+      return tree.value
 
-def main:
-  tree = Tree/Node {
-    lft: Tree/Node { lft: Tree/Leaf { val: 1 }, rgt: Tree/Leaf { val: 2 } },
-    rgt: Tree/Node { lft: Tree/Leaf { val: 3 }, rgt: Tree/Leaf { val: 4 } }
-  }
+def main() -> u24:
+  tree = ![![!1, !2],![!3, !4]]
   return sum(tree)
 ```
 
-It accomplishes the task by replacing every `Tree/Node { lft, rgt }` by `lft +
-rgt`, and replacing every `Tree/Leaf` by `val`. As a result, the entire "tree of
+It accomplishes the task by replacing every `Tree/Node { left, right }` by `left +
+right`, and replacing every `Tree/Leaf` by `value`. As a result, the entire "tree of
 values" is turned into a "tree of additions", and it evaluates as follows:
 
 ```python
@@ -378,32 +413,22 @@ nums = 10
 ```
 
 Now, this may look limiting, but it actually isn't. Folds are known for being
-universal: *any algorithm that can be implemented with a loop, can be
-implemented with a fold*. So, we can do much more than just compute an
+universal: _any algorithm that can be implemented with a loop, can be
+implemented with a fold_. So, we can do much more than just compute an
 "aggregated value". Suppose we wanted, for example, to transform every element
 into a tuple of `(index,value)`, returning a new tree. Here's how to do it:
 
 ```python
-type Tree:
-  Node { ~lft, ~rgt }
-  Leaf { val }
-
 def enum(tree):
   idx = 0
   fold tree with idx:
     case Tree/Node:
-      return Tree/Node {
-        lft: tree.lft(idx * 2 + 0),
-        rgt: tree.rgt(idx * 2 + 1),
-      }
+      return ![tree.left(idx * 2 + 0), tree.right(idx * 2 + 1)]
     case Tree/Leaf:
-      return (idx, tree.val)
+      return !(idx, tree.value)
 
-def main:
-  tree = Tree/Node {
-    lft: Tree/Node { lft: Tree/Leaf { val: 1 }, rgt: Tree/Leaf { val: 2 }, },
-    rgt: Tree/Node { lft: Tree/Leaf { val: 3 }, rgt: Tree/Leaf { val: 4 }, }
-  }
+def main() -> Tree(u24):
+  tree = ![![!1, !2],![!3, !4]]
   return enum(tree)
 ```
 
@@ -424,32 +449,28 @@ it is really liberating, and will let you write better algorithms. As an
 exercise, use `fold` to implement a "reverse" algorithm for lists:
 
 ```python
-def reverse(list):
+def reverse(list: List(T)) -> List(T):
   # exercise
   ?
 
-def main:
+def main() -> List(u24):
   return reverse([1,2,3])
 ```
 
 ## Bend: generating recursive datatypes
 
 Bending is the opposite of folding. Whatever `fold` consumes, `bend` creates.
-The idea is that, by defining an *initial state* and a *halting condition*, we
-can "grow" a recursive structure, layer by layer, until the condition is met. 
+The idea is that, by defining an _initial state_ and a _halting condition_, we
+can "grow" a recursive structure, layer by layer, until the condition is met.
 For example, consider the code below:
 
 ```python
-type Tree:
-  Node { ~lft, ~rgt }
-  Leaf { val }
-
-def main():
+def main() -> Tree(u24):
   bend x = 0:
     when x < 3:
-      tree = Tree/Node { lft: fork(x + 1), rgt: fork(x + 1) }
+      tree = ![fork(x + 1), fork(x + 1)]
     else:
-      tree = Tree/Leaf { val: 7 }
+      tree = !7
   return tree
 ```
 
@@ -463,7 +484,7 @@ tree = fork(0)
 tree = ![fork(1), fork(1)]
 tree = ![![fork(2),fork(2)], ![fork(2),fork(2)]]
 tree = ![![![fork(3),fork(3)], ![fork(3),fork(3)]], ![![fork(3),fork(3)], ![fork(3),fork(3)]]]
-tree = ![![![7,7], ![7,7]], ![![7,7], ![7,7]]]
+tree = ![![![!7, !7], ![!7, !7]], ![![!7, !7], ![!7, !7]]]
 ```
 
 With some imagination, we can easily see that, by recursively unrolling a state
@@ -491,16 +512,15 @@ bend idx = 0:
 Of course, if you do it, Bend's devs will be very disappointed with you. Why?
 Because everyone is here for one thing. Let's do it!
 
-Parallel "Hello, World"
------------------------
+## Parallel "Hello, World"
 
 So, after all this learning, we're now ready to answer the ultimate question:
 
 **How do we write parallel algorithms in Bend?**
 
-At this point, you might have the idea: by using *folds* and *bends*, right?
+At this point, you might have the idea: by using _folds_ and _bends_, right?
 Well... actually not! You do not need to use these constructs at all to make it
-happen. Anything that *can* be parallelized *will* be parallelized on Bend. To
+happen. Anything that _can_ be parallelized _will_ be parallelized on Bend. To
 be more precise, this:
 
 ```
@@ -528,7 +548,7 @@ Is actually just a similar way to write:
 sum = (0 + (1 + (2 + (3 + (4 + (5 + (6 + 7)))))))
 ```
 
-Which is *really bad* for parallelism, because the only way to compute this is
+Which is _really bad_ for parallelism, because the only way to compute this is
 by evaluating the expressions one after the other, in order:
 
 ```python
@@ -558,7 +578,7 @@ sum = (6 + 22)
 sum = 28
 ```
 
-That's so much better that even the *line count* is shorter!
+That's so much better that even the _line count_ is shorter!
 
 So, how do you write a parallel program in Bend?
 
@@ -570,7 +590,7 @@ unlike the former one, they will run in parallel. And that's why `bend` and
 example, to add numbers in parallel, we can write:
 
 ```python
-def main():
+def main() -> u24:
   bend d = 0, i = 0:
     when d < 28:
       sum = fork(d+1, i*2+0) + fork(d+1, i*2+1)
@@ -585,7 +605,7 @@ only supports 24-bit numbers (`u24`), thus, the results will always be in `mod
 16777216`.
 
 ```
-bend run main.bend
+bend run-rs main.bend
 ```
 
 On my machine (Apple M3 Max), it completes after `147s`, at `65 MIPS` (Million
@@ -593,8 +613,10 @@ Interactions Per Second - Bend's version of the FLOPS). That's too long. Let's
 run it in parallel, by using the **C interpreter** instead:
 
 ```
-bend run-c main.bend
+bend run main.bend
 ```
+
+> Note: `run` is an alias to the `run-c` command.
 
 And, just like that, the same program now runs in `8.49s`, at `1137 MIPS`.
 That's **18x faster**! Can we do better? Sure: let's use the **C compiler** now:
@@ -635,28 +657,30 @@ improving the compiler is a higher priority now. You can expect it to improve
 continuously over time. For now, it is important to understand the state of
 things, and set up reasonable expectations.
 
-A Parallel Bitonic Sort
------------------------
+## A Parallel Bitonic Sort
 
 The bitonic sort is a popular algorithm that sorts a set of numbers by moving
 them through a "circuit" (sorting network) and swapping as they pass through:
 
-![bsort](https://upload.wikimedia.org/wikipedia/commons/thumb/b/bd/BitonicSort1.svg/1686px-BitonicSort1.svg.png)
+![bitonic-sort](https://upload.wikimedia.org/wikipedia/commons/thumb/b/bd/BitonicSort1.svg/1686px-BitonicSort1.svg.png)
 
 In CUDA, this can be implemented by using mutable arrays and synchronization
 primitives. This is well known. What is less known is that it can also be
-implemented as a series of *immutable tree rotations*, with pattern-matching and
+implemented as a series of _immutable tree rotations_, with pattern-matching and
 recursion. Don't bother trying to understand it, but, here's the code:
 
 ```python
-def gen(d, x):
+def gen(d: u24, x: u24) -> Any:
   switch d:
     case 0:
       return x
     case _:
       return (gen(d-1, x * 2 + 1), gen(d-1, x * 2))
+```
+> Note: The type of this function can't be expressed with Bend's type system, but we can still write it using `Any`.
 
-def sum(d, t):
+```python
+def sum(d: u24, t: u24) -> u24:
   switch d:
     case 0:
       return t
@@ -664,17 +688,17 @@ def sum(d, t):
       (t.a, t.b) = t
       return sum(d-1, t.a) + sum(d-1, t.b)
 
-def swap(s, a, b):
+def swap(s: u24, a: Any, b: Any) -> (Any, Any):
   switch s:
     case 0:
       return (a,b)
     case _:
       return (b,a)
 
-def warp(d, s, a, b):
+def warp(d: u24, s: u24, a: Any, b: Any) -> (Any, Any):
   switch d:
     case 0:
-      return swap(s + (a > b), a, b)
+      return swap(s ^ (a > b), a, b)
     case _:
       (a.a,a.b) = a
       (b.a,b.b) = b
@@ -682,7 +706,7 @@ def warp(d, s, a, b):
       (B.a,B.b) = warp(d-1, s, a.b, b.b)
       return ((A.a,B.a),(A.b,B.b))
 
-def flow(d, s, t):
+def flow(d: u24, s: u24, t: Any) -> Any:
   switch d:
     case 0:
       return t
@@ -690,7 +714,7 @@ def flow(d, s, t):
       (t.a, t.b) = t
       return down(d, s, warp(d-1, s, t.a, t.b))
 
-def down(d,s,t):
+def down(d: u24, s: u24, t: Any) -> Any:
   switch d:
     case 0:
       return t
@@ -698,15 +722,15 @@ def down(d,s,t):
       (t.a, t.b) = t
       return (flow(d-1, s, t.a), flow(d-1, s, t.b))
 
-def sort(d, s, t):
+def sort(d: u24, s: u24, t: Any) -> Any:
   switch d:
     case 0:
       return t
     case _:
       (t.a, t.b) = t
-      return flow(d, s, sort(d-1, 0, t.a), sort(d-1, 1, t.b))
+      return flow(d, s, (sort(d-1, 0, t.a), sort(d-1, 1, t.b)))
 
-def main:
+def main() -> u24:
   return sum(18, sort(18, 0, gen(18, 0)))
 ```
 
@@ -722,14 +746,13 @@ computations possible, let's benchmark this program. Here are the results:
 And, just like magic, it works! 51x faster on RTX. How cool is that?
 
 Of course, you would absolutely **not** want to sort numbers like that,
-specially when mutable arrays exist. But there are many algorithms that *can
-not* be implemented easily with buffers. Evolutionary and genetic algorithms,
+specially when mutable arrays exist. But there are many algorithms that _can
+not_ be implemented easily with buffers. Evolutionary and genetic algorithms,
 proof checkers, compilers, interpreters. For the first time ever, you can
 implement these algorithms as high-level functions, in a language that runs on
 GPUs. That's the magic of Bend!
 
-Graphics Rendering
-------------------
+## Graphics Rendering
 
 While the algorithm above does parallelize well, it is very memory-hungry. It is
 a nice demo of Bend's potential, but isn't a great way to sort lists. Currently,
@@ -743,18 +766,18 @@ compute-heavy, but less memory-hungry, computations. For example, consider:
 
 ```python
 # given a shader, returns a square image
-def render(depth, shader):
+def render(depth: u24) -> Any:
   bend d = 0, i = 0:
     when d < depth:
       color = (fork(d+1, i*2+0), fork(d+1, i*2+1))
     else:
       width = depth / 2
-      color = shader(i % width, i / width)
+      color = demo_shader(i % width, i / width)
   return color
 
 # given a position, returns a color
 # for this demo, it just busy loops
-def demo_shader(x, y):
+def demo_shader(x: Any, y: Any) -> Any:
   bend i = 0:
     when i < 100000:
       color = fork(i + 1)
@@ -763,7 +786,7 @@ def demo_shader(x, y):
   return color
 
 # renders a 256x256 image using demo_shader
-def main:
+def main() -> Any:
   return render(16, demo_shader)
 ```
 
@@ -790,18 +813,12 @@ perform about 100 MIPS on interpreted mode, and 130 MIPS on compiled mode
 faster than the interpreter). A well-parallelizable program, though, will easily
 reach 1000+ MIPS.
 
-
-To be continued...
-------------------
+## To be continued...
 
 This guide isn't extensive, and there's a lot uncovered. For example, Bend also
-has an entire "secret" Haskell-like syntax that is compatible with old HVM1.
-[Here](https://gist.github.com/VictorTaelin/9cbb43e2b1f39006bae01238f99ff224) is
-an implementation of the Bitonic Sort with Haskell-like equations. We'll
-document its syntax here soon!
+has an entire Haskell-like functional syntax that is compatible with old HVM1, you can find it documented [here](https://github.com/HigherOrderCO/Bend/blob/main/docs/syntax.md#fun-syntax). You can also check [this](https://gist.github.com/VictorTaelin/9cbb43e2b1f39006bae01238f99ff224) out, it's an implementation of the Bitonic Sort with Haskell-like equations. 
 
-Community
----------
+## Community
 
 Remember: Bend is very new and experimental. Bugs and imperfections should be
 expected. That said, [HOC](https://HigherOrderCO.com/) will provide long-term
@@ -809,4 +826,3 @@ support to Bend (and its runtime, HVM2). So, if you believe this paradigm will
 be big someday, and want to be part of it in these early stages, join us on
 [Discord](https://Discord.HigherOrderCO.com/). Report bugs, bring your
 suggestions, and let's chat and build this future together!
-

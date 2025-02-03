@@ -1,6 +1,6 @@
-use super::{Book, Definition, FanKind, Name, Num, Op, Pattern, Rule, Tag, Term};
+use super::{Book, Definition, FanKind, Name, Num, Op, Pattern, Rule, Tag, Term, Type};
 use crate::maybe_grow;
-use std::{fmt, ops::Deref};
+use std::{fmt, ops::Deref, sync::atomic::AtomicU64};
 
 /* Some aux structures for things that are not so simple to display */
 
@@ -40,16 +40,31 @@ macro_rules! display {
 
 /* The actual display implementations */
 
+static NAMEGEN: AtomicU64 = AtomicU64::new(0);
+
+fn gen_fan_pat_name() -> Name {
+  let n = NAMEGEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+  Name::new(format!("pat%{}", super::num_to_name(n)))
+}
+
+fn namegen_reset() {
+  NAMEGEN.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
 impl fmt::Display for Term {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     maybe_grow(|| match self {
-      Term::Lam { tag, pat, bod } => {
-        write!(f, "{}λ{} {}", tag.display_padded(), pat, bod)
-      }
+      Term::Lam { tag, pat, bod } => match &**pat {
+        Pattern::Fan(_, _, _) => {
+          let name = gen_fan_pat_name();
+          write!(f, "{}λ{name} let {} = {name}; {}", tag.display_padded(), pat, bod)
+        }
+        _ => write!(f, "{}λ{} {}", tag.display_padded(), pat, bod),
+      },
       Term::Var { nam } => write!(f, "{nam}"),
       Term::Link { nam } => write!(f, "${nam}"),
       Term::Let { pat, val, nxt } => write!(f, "let {} = {}; {}", pat, val, nxt),
-      Term::Do { typ, bod } => write!(f, "do {typ} {{ {bod} }}"),
+      Term::With { typ, bod } => write!(f, "with {typ} {{ {bod} }}"),
       Term::Ask { pat, val, nxt } => write!(f, "ask {pat} = {val}; {nxt}"),
       Term::Use { nam, val, nxt } => {
         let Some(nam) = nam else { unreachable!() };
@@ -59,14 +74,17 @@ impl fmt::Display for Term {
       Term::App { tag, fun, arg } => {
         write!(f, "{}({} {})", tag.display_padded(), fun.display_app(tag), arg)
       }
-      Term::Mat { arg, bnd, with, arms } => {
+      Term::Mat { arg, bnd, with_bnd, with_arg, arms } => {
         write!(f, "match ")?;
         if let Some(bnd) = bnd {
           write!(f, "{} = ", bnd)?;
         }
         write!(f, "{} ", arg)?;
-        if !with.is_empty() {
-          write!(f, "with {} ", DisplayJoin(|| with, ", "))?;
+        if !with_bnd.is_empty() {
+          write!(f, "with ")?;
+          for (bnd, arg) in with_bnd.iter().zip(with_arg.iter()) {
+            write!(f, "{} = {}, ", var_as_str(bnd), arg)?;
+          }
         }
         write!(f, "{{ ")?;
         for arm in arms {
@@ -78,14 +96,17 @@ impl fmt::Display for Term {
         }
         write!(f, "}}")
       }
-      Term::Swt { arg, bnd, with, pred, arms } => {
+      Term::Swt { arg, bnd, with_bnd, with_arg, pred, arms } => {
         write!(f, "switch ")?;
         if let Some(bnd) = bnd {
           write!(f, "{bnd} = ")?;
         }
         write!(f, "{arg} ")?;
-        if !with.is_empty() {
-          write!(f, "with {} ", DisplayJoin(|| with, ", "))?;
+        if !with_bnd.is_empty() {
+          write!(f, "with ")?;
+          for (bnd, arg) in with_bnd.iter().zip(with_arg.iter()) {
+            write!(f, "{} = {}, ", var_as_str(bnd), arg)?;
+          }
         }
         write!(f, "{{ ")?;
         for (i, arm) in arms.iter().enumerate() {
@@ -101,14 +122,17 @@ impl fmt::Display for Term {
         }
         write!(f, "}}")
       }
-      Term::Fold { bnd, arg, with, arms } => {
+      Term::Fold { bnd, arg, with_bnd, with_arg, arms } => {
         write!(f, "fold ")?;
         if let Some(bnd) = bnd {
           write!(f, "{} = ", bnd)?;
         }
         write!(f, "{} ", arg)?;
-        if !with.is_empty() {
-          write!(f, "with {} ", DisplayJoin(|| with, ", "))?;
+        if !with_bnd.is_empty() {
+          write!(f, "with ")?;
+          for (bnd, arg) in with_bnd.iter().zip(with_arg.iter()) {
+            write!(f, "{} = {}, ", var_as_str(bnd), arg)?;
+          }
         }
         write!(f, "{{ ")?;
         for arm in arms {
@@ -120,7 +144,7 @@ impl fmt::Display for Term {
         }
         write!(f, "}}")
       }
-      Term::Bend { bind, init, cond, step, base } => {
+      Term::Bend { bnd: bind, arg: init, cond, step, base } => {
         write!(f, "bend ")?;
         for (bind, init) in bind.iter().zip(init) {
           if let Some(bind) = bind {
@@ -143,6 +167,13 @@ impl fmt::Display for Term {
       }
       Term::List { els } => write!(f, "[{}]", DisplayJoin(|| els.iter(), ", "),),
       Term::Open { typ, var, bod } => write!(f, "open {typ} {var}; {bod}"),
+      Term::Def { def, nxt } => {
+        write!(f, "def ")?;
+        for rule in def.rules.iter() {
+          write!(f, "{}", rule.display(&def.name))?;
+        }
+        write!(f, "{nxt}")
+      }
       Term::Err => write!(f, "<Invalid>"),
     })
   }
@@ -190,13 +221,19 @@ impl Rule {
 
 impl fmt::Display for Definition {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    namegen_reset();
+    writeln!(f, "{}{}: {}", if !self.check { "unchecked " } else { "" }, self.name, self.typ)?;
     write!(f, "{}", DisplayJoin(|| self.rules.iter().map(|x| x.display(&self.name)), "\n"))
   }
 }
 
 impl fmt::Display for Book {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "{}", DisplayJoin(|| self.defs.values(), "\n\n"))
+    write!(f, "{}", DisplayJoin(|| self.defs.values(), "\n\n"))?;
+    for def in self.hvm_defs.values() {
+      writeln!(f, "hvm {}:\n{}\n", def.name, def.body.show())?;
+    }
+    Ok(())
   }
 }
 
@@ -227,16 +264,18 @@ impl fmt::Display for Op {
       Op::MUL => write!(f, "*"),
       Op::DIV => write!(f, "/"),
       Op::REM => write!(f, "%"),
-      Op::EQL => write!(f, "=="),
+      Op::EQ => write!(f, "=="),
       Op::NEQ => write!(f, "!="),
-      Op::LTN => write!(f, "<"),
-      Op::GTN => write!(f, ">"),
+      Op::LT => write!(f, "<"),
+      Op::GT => write!(f, ">"),
       Op::AND => write!(f, "&"),
       Op::OR => write!(f, "|"),
       Op::XOR => write!(f, "^"),
       Op::POW => write!(f, "**"),
-      Op::LOG => todo!(),
-      Op::ATN => todo!(),
+      Op::SHR => write!(f, ">>"),
+      Op::SHL => write!(f, "<<"),
+      Op::LE => write!(f, "<="),
+      Op::GE => write!(f, ">="),
     }
   }
 }
@@ -252,6 +291,44 @@ impl Tag {
   }
 }
 
+impl fmt::Display for Type {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    maybe_grow(|| match self {
+      Type::Hole => write!(f, "_"),
+      Type::Var(nam) => write!(f, "{nam}"),
+      Type::Arr(lft, rgt) => write!(f, "({} -> {})", lft, rgt.display_arrow()),
+      Type::Ctr(nam, args) => {
+        if args.is_empty() {
+          write!(f, "{nam}")
+        } else {
+          write!(f, "({nam} {})", DisplayJoin(|| args.iter(), " "))
+        }
+      }
+      Type::Number(t) => write!(f, "(Number {t})"),
+      Type::Integer(t) => write!(f, "(Integer {t})"),
+      Type::U24 => write!(f, "u24"),
+      Type::I24 => write!(f, "i24"),
+      Type::F24 => write!(f, "f24"),
+      Type::Any => write!(f, "Any"),
+      Type::None => write!(f, "None"),
+      Type::Tup(els) => write!(f, "({})", DisplayJoin(|| els.iter(), ", ")),
+    })
+  }
+}
+
+impl Type {
+  pub fn display_arrow(&self) -> impl fmt::Display + '_ {
+    maybe_grow(|| {
+      DisplayFn(move |f| match self {
+        Type::Arr(lft, rgt) => {
+          write!(f, "{} -> {}", lft, rgt.display_arrow())
+        }
+        _ => write!(f, "{}", self),
+      })
+    })
+  }
+}
+
 fn var_as_str(nam: &Option<Name>) -> &str {
   nam.as_ref().map_or("*", Name::deref)
 }
@@ -260,12 +337,20 @@ fn var_as_str(nam: &Option<Name>) -> &str {
 
 impl Book {
   pub fn display_pretty(&self) -> impl fmt::Display + '_ {
-    display!("{}", DisplayJoin(|| self.defs.values().map(|def| def.display_pretty()), "\n\n"))
+    display!(
+      "{}\n{}",
+      DisplayJoin(|| self.defs.values().map(|def| def.display_pretty()), "\n\n"),
+      DisplayJoin(
+        || self.hvm_defs.values().map(|def| display!("hvm {}:\n{}", def.name, def.body.show())),
+        "\n"
+      )
+    )
   }
 }
 
 impl Definition {
   pub fn display_pretty(&self) -> impl fmt::Display + '_ {
+    namegen_reset();
     display!("{}", DisplayJoin(|| self.rules.iter().map(|x| x.display_pretty(&self.name)), "\n"))
   }
 }
@@ -279,22 +364,43 @@ impl Rule {
       self.body.display_pretty(2)
     )
   }
+
+  pub fn display_def_aux<'a>(&'a self, def_name: &'a Name, tab: usize) -> impl fmt::Display + 'a {
+    display!(
+      "({}{}) =\n  {:tab$}{}",
+      def_name,
+      DisplayJoin(|| self.pats.iter().map(|x| display!(" {x}")), ""),
+      "",
+      self.body.display_pretty(tab + 2)
+    )
+  }
 }
 
 impl Term {
   pub fn display_pretty(&self, tab: usize) -> impl fmt::Display + '_ {
     maybe_grow(|| {
       DisplayFn(move |f| match self {
-        Term::Lam { tag, pat, bod } => {
-          write!(f, "{}λ{} {}", tag.display_padded(), pat, bod.display_pretty(tab))
-        }
+        Term::Lam { tag, pat, bod } => match &**pat {
+          Pattern::Fan(_, _, _) => {
+            let name = gen_fan_pat_name();
+            write!(
+              f,
+              "{}λ{name} let {} = {name};\n{:tab$}{}",
+              tag.display_padded(),
+              pat,
+              "",
+              bod.display_pretty(tab),
+            )
+          }
+          _ => write!(f, "{}λ{} {}", tag.display_padded(), pat, bod.display_pretty(tab)),
+        },
         Term::Var { nam } => write!(f, "{nam}"),
         Term::Link { nam } => write!(f, "${nam}"),
         Term::Let { pat, val, nxt } => {
           write!(f, "let {} = {};\n{:tab$}{}", pat, val.display_pretty(tab), "", nxt.display_pretty(tab))
         }
-        Term::Do { typ, bod } => {
-          writeln!(f, "do {typ} {{")?;
+        Term::With { typ, bod } => {
+          writeln!(f, "with {typ} {{")?;
           writeln!(f, "{:tab$}{}", "", bod.display_pretty(tab + 2), tab = tab + 2)?;
           write!(f, "{:tab$}}}", "")
         }
@@ -337,14 +443,17 @@ impl Term {
         Term::Oper { opr, fst, snd } => {
           write!(f, "({} {} {})", opr, fst.display_pretty(tab), snd.display_pretty(tab))
         }
-        Term::Mat { bnd, arg, with, arms } => {
+        Term::Mat { bnd, arg, with_bnd, with_arg, arms } => {
           write!(f, "match ")?;
           if let Some(bnd) = bnd {
             write!(f, "{} = ", bnd)?;
           }
           write!(f, "{} ", arg.display_pretty(tab))?;
-          if !with.is_empty() {
-            write!(f, "with {} ", DisplayJoin(|| with, ", "))?;
+          if !with_bnd.is_empty() {
+            write!(f, "with ")?;
+            for (bnd, arg) in with_bnd.iter().zip(with_arg.iter()) {
+              write!(f, "{} = {}, ", var_as_str(bnd), arg)?;
+            }
           }
           write!(f, "{{ ")?;
           for arm in arms {
@@ -356,14 +465,17 @@ impl Term {
           }
           write!(f, "\n{:tab$}}}", "")
         }
-        Term::Swt { bnd, arg, with, pred, arms } => {
+        Term::Swt { bnd, arg, with_bnd, with_arg, pred, arms } => {
           write!(f, "switch ")?;
           if let Some(bnd) = bnd {
             write!(f, "{bnd} = ")?;
           }
           write!(f, "{} ", arg.display_pretty(tab))?;
-          if !with.is_empty() {
-            write!(f, "with {} ", DisplayJoin(|| with, ", "))?;
+          if !with_bnd.is_empty() {
+            write!(f, "with ")?;
+            for (bnd, arg) in with_bnd.iter().zip(with_arg.iter()) {
+              write!(f, "{} = {}, ", var_as_str(bnd), arg)?;
+            }
           }
           writeln!(f, "{{")?;
           for (i, arm) in arms.iter().enumerate() {
@@ -379,14 +491,17 @@ impl Term {
           }
           write!(f, "{:tab$}}}", "")
         }
-        Term::Fold { bnd, arg, with, arms } => {
+        Term::Fold { bnd, arg, with_bnd, with_arg, arms } => {
           write!(f, "fold ")?;
           if let Some(bnd) = bnd {
             write!(f, "{} = ", bnd)?;
           }
           write!(f, "{} ", arg.display_pretty(tab))?;
-          if !with.is_empty() {
-            write!(f, "with {} ", DisplayJoin(|| with, ", "))?;
+          if !with_bnd.is_empty() {
+            write!(f, "with ")?;
+            for (bnd, arg) in with_bnd.iter().zip(with_arg.iter()) {
+              write!(f, "{} = {}, ", var_as_str(bnd), arg)?;
+            }
           }
           write!(f, "{{ ")?;
           for arm in arms {
@@ -398,7 +513,7 @@ impl Term {
           }
           write!(f, "\n{:tab$}}}", "")
         }
-        Term::Bend { bind, init, cond, step, base } => {
+        Term::Bend { bnd: bind, arg: init, cond, step, base } => {
           write!(f, "bend ")?;
           for (bind, init) in bind.iter().zip(init) {
             if let Some(bind) = bind {
@@ -422,6 +537,17 @@ impl Term {
         Term::Num { val: Num::F24(val) } => write!(f, "{val:.3}"),
         Term::Str { val } => write!(f, "{val:?}"),
         Term::Ref { nam } => write!(f, "{nam}"),
+        Term::Def { def, nxt } => {
+          write!(f, "def ")?;
+          for (i, rule) in def.rules.iter().enumerate() {
+            if i == 0 {
+              writeln!(f, "{}", rule.display_def_aux(&def.name, tab + 4))?;
+            } else {
+              writeln!(f, "{:tab$}{}", "", rule.display_def_aux(&def.name, tab + 4), tab = tab + 4)?;
+            }
+          }
+          write!(f, "{:tab$}{}", "", nxt.display_pretty(tab))
+        }
         Term::Era => write!(f, "*"),
         Term::Err => write!(f, "<Error>"),
       })

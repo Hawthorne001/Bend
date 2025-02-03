@@ -3,13 +3,13 @@ mod order_kwargs;
 pub mod parser;
 pub mod to_fun;
 
-use crate::fun::{CtrField, Name, Num, Op};
+use crate::fun::{Name, Num, Op, Source, Type};
 use interner::global::GlobalString;
 
 #[derive(Clone, Debug)]
 pub enum Expr {
   // "*"
-  Eraser,
+  Era,
   // [a-zA-Z_]+
   Var { nam: Name },
   // "$" [a-zA-Z_]+
@@ -21,7 +21,7 @@ pub enum Expr {
   // "lambda" {names}* ":" {bod}
   Lam { names: Vec<(Name, bool)>, bod: Box<Expr> },
   // {lhs} {op} {rhs}
-  Bin { op: Op, lhs: Box<Expr>, rhs: Box<Expr> },
+  Opr { op: Op, lhs: Box<Expr>, rhs: Box<Expr> },
   // "\"" ... "\""
   Str { val: GlobalString },
   // "[" ... "]"
@@ -31,13 +31,17 @@ pub enum Expr {
   // "{" {els} "}"
   Sup { els: Vec<Expr> },
   // {name} "{" {kwargs} "}"
-  Constructor { name: Name, args: Vec<Expr>, kwargs: Vec<(Name, Expr)> },
+  Ctr { name: Name, args: Vec<Expr>, kwargs: Vec<(Name, Expr)> },
   // "[" {term} "for" {bind} "in" {iter} ("if" {cond})? "]"
-  Comprehension { term: Box<Expr>, bind: Name, iter: Box<Expr>, cond: Option<Box<Expr>> },
+  LstMap { term: Box<Expr>, bind: Name, iter: Box<Expr>, cond: Option<Box<Expr>> },
   // "{" {entries} "}"
-  MapInit { entries: Vec<(Expr, Expr)> },
+  Map { entries: Vec<(Expr, Expr)> },
   // {map} "[" {key} "]"
   MapGet { nam: Name, key: Box<Expr> },
+  // "![" {left} "," {right} "]"
+  TreeNode { left: Box<Expr>, right: Box<Expr> },
+  // "!" {val}
+  TreeLeaf { val: Box<Expr> },
 }
 
 #[derive(Clone, Debug)]
@@ -46,9 +50,10 @@ pub struct MatchArm {
   pub rgt: Stmt,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum AssignPattern {
   // "*"
+  #[default]
   Eraser,
   // [a-zA-Z_]+
   Var(Name),
@@ -71,6 +76,7 @@ pub enum InPlaceOp {
   And,
   Or,
   Xor,
+  Map,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -84,7 +90,7 @@ pub enum Stmt {
   // {var} += {val} ";"? {nxt}
   InPlace {
     op: InPlaceOp,
-    var: Name,
+    pat: Box<AssignPattern>,
     val: Box<Expr>,
     nxt: Box<Stmt>,
   },
@@ -92,61 +98,73 @@ pub enum Stmt {
   //  {then}
   // "else" ":"
   //  {otherwise}
-  // <nxt>?
+  // {nxt}?
   If {
     cond: Box<Expr>,
     then: Box<Stmt>,
     otherwise: Box<Stmt>,
     nxt: Option<Box<Stmt>>,
   },
-  // "match" {arg} ":" ("as" {bind})?
-  //   case {lft} ":" {rgt}
+  // "match" ({bind} "=")? {arg} ("with" (({bind}) | ({bind} "=" {arg}) ","?)*)? ":"
+  //   "case" {lft} ":"
+  //     {rgt}
   //   ...
   // <nxt>?
   Match {
     arg: Box<Expr>,
-    bind: Option<Name>,
+    bnd: Option<Name>,
+    with_bnd: Vec<Option<Name>>,
+    with_arg: Vec<Expr>,
     arms: Vec<MatchArm>,
     nxt: Option<Box<Stmt>>,
   },
-  // "switch" {arg} ("as" {bind})?
-  //   case 0..wildcard ":" {rgt}
+  // "switch" ({bind} "=")? {arg}("with" (({bind}) | ({bind} "=" {arg}) ","?)*)? ":"
+  //   "case" 0 ":"
+  //     {stmt}
   //   ...
+  //   "case" _ ":"
+  //     {stmt}
   // <nxt>?
   Switch {
     arg: Box<Expr>,
-    bind: Option<Name>,
+    bnd: Option<Name>,
+    with_bnd: Vec<Option<Name>>,
+    with_arg: Vec<Expr>,
     arms: Vec<Stmt>,
     nxt: Option<Box<Stmt>>,
   },
-  // "bend" ({bind} ("="" {init})?)* "while" {cond} ":"
-  //   {step}
-  // "then" ":"
-  //   {base}
-  // <nxt>?
+  // "bend" ({bind} ("=" {init})? ","?)*
+  //   "when" {cond} ":"
+  //     {step}
+  //   "else" ":"
+  //     {base}
+  // {nxt}}?
   Bend {
-    bind: Vec<Option<Name>>,
-    init: Vec<Expr>,
+    bnd: Vec<Option<Name>>,
+    arg: Vec<Expr>,
     cond: Box<Expr>,
     step: Box<Stmt>,
     base: Box<Stmt>,
     nxt: Option<Box<Stmt>>,
   },
-  // "fold" {arg} ("as" {bind})? ":" {arms}
-  //   case {lft} ":" {rgt}
+  // "fold" ({bind} "=")? {arg} ("with" (({bind}) | ({bind} "=" {arg}) ","?)*)? ":"
+  //   case {lft} ":"
+  //     {rgt}
   //   ...
-  // <nxt>?
+  // {nxt}?
   Fold {
     arg: Box<Expr>,
-    bind: Option<Name>,
-    with: Vec<Name>,
+    bnd: Option<Name>,
+    with_bnd: Vec<Option<Name>>,
+    with_arg: Vec<Expr>,
     arms: Vec<MatchArm>,
     nxt: Option<Box<Stmt>>,
   },
-  // "do" {fun} ":"
-  //   {block}
+  // "with" {typ} ":"
+  //   "ask" {id} = {expr} ";"?
+  //   ...
   // <nxt>?
-  Do {
+  With {
     typ: Name,
     bod: Box<Stmt>,
     nxt: Option<Box<Stmt>>,
@@ -155,7 +173,7 @@ pub enum Stmt {
   Ask {
     pat: AssignPattern,
     val: Box<Expr>,
-    nxt: Box<Stmt>,
+    nxt: Option<Box<Stmt>>,
   },
   // "return" {expr} ";"?
   Return {
@@ -173,30 +191,24 @@ pub enum Stmt {
     val: Box<Expr>,
     nxt: Box<Stmt>,
   },
+  // {def} {nxt}
+  LocalDef {
+    def: Box<Definition>,
+    nxt: Box<Stmt>,
+  },
   #[default]
   Err,
-}
-
-// Name "(" {fields}* ")"
-#[derive(Clone, Debug)]
-pub struct Variant {
-  pub name: Name,
-  pub fields: Vec<CtrField>,
 }
 
 // "def" {name} "(" {params} ")" ":" {body}
 #[derive(Clone, Debug)]
 pub struct Definition {
   pub name: Name,
-  pub params: Vec<Name>,
+  pub typ: Type,
+  pub check: bool,
+  pub args: Vec<Name>,
   pub body: Stmt,
-}
-
-// "enum" ":" {variants}*
-#[derive(Clone, Debug)]
-pub struct Enum {
-  pub name: Name,
-  pub variants: Vec<Variant>,
+  pub source: Source,
 }
 
 impl InPlaceOp {
@@ -209,6 +221,7 @@ impl InPlaceOp {
       InPlaceOp::And => Op::AND,
       InPlaceOp::Or => Op::OR,
       InPlaceOp::Xor => Op::XOR,
+      InPlaceOp::Map => unreachable!(),
     }
   }
 }

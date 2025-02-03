@@ -15,17 +15,16 @@ impl Ctx<'_> {
   /// main = (λx1 λx2 λx3 (MainBody x1 x2 x3) arg1 arg2 arg3)
   /// ```
   pub fn apply_args(&mut self, args: Option<Vec<Term>>) -> Result<(), Diagnostics> {
-    self.info.start_pass();
-
     if let Some(entrypoint) = &self.book.entrypoint {
       let main_def = &mut self.book.defs[entrypoint];
 
       // Since we fatal error, no need to exit early
       let n_rules = main_def.rules.len();
       if n_rules != 1 {
-        self.info.add_rule_error(
+        self.info.add_function_error(
           format!("Expected the entrypoint function to have only one rule, found {n_rules}."),
           entrypoint.clone(),
+          main_def.source.clone(),
         );
       }
 
@@ -35,9 +34,10 @@ impl Ctx<'_> {
         if let Pattern::Var(var) = pat {
           main_body = Term::lam(Pattern::Var(var.clone()), main_body);
         } else {
-          self.info.add_rule_error(
+          self.info.add_function_error(
             format!("Expected the entrypoint function to only have variable patterns, found '{pat}'."),
             entrypoint.clone(),
+            main_def.source.clone(),
           );
         }
       }

@@ -1,11 +1,10 @@
 # Mixed contents in a `do` block should still work.
-
 Result/bind r nxt = match r {
-  Result/Ok: (nxt r.val)
+  Result/Ok: ((undefer nxt) r.val)
   Result/Err: r
 }
 
-main = do Result {
+main = with Result {
   let x = 1
   let y = (Result/Ok x)
   ask y = y

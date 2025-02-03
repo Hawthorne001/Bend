@@ -22,8 +22,8 @@ def inc(n):
   n += 1;
   return n;
 
-#def inc_list(list):
-#  return [x+1 for x in list];
+def inc_list(list):
+  return [x+1 for x in list];
 
 def lam():
   return lambda x, y: x;
@@ -70,7 +70,11 @@ def era():
   the_expr_killer = *
   return the_expr_killer(9)
 
+def sup():
+  x = {[1, 2], [3, 4, 5, 6]}
+  return x
+
 def main():
-  do IO:
+  with IO:
     x <- IO.read();
     return x;

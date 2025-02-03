@@ -2,8 +2,8 @@
 source: tests/golden_tests.rs
 input_file: tests/golden_tests/run_file/lam_op2_nested.bend
 ---
-[4m[1m[33mWarnings:[0m
-[1mDuring readback:[0m
-  Encountered an invalid numeric operation. (2 occurrences)
+NumScott:
+λa (+ (* a a) (+ 3 (+ 2 a)))
 
-λa (* a (+ a <Invalid>))
+Scott:
+λa (+ (* a a) (+ 3 (+ 2 a)))

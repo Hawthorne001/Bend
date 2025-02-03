@@ -1,8 +1,10 @@
 use crate::{
-  fun::{Book, Definition, Name, Pattern, Rule, Term},
+  fun::{Book, Definition, Name, Pattern, Rule, Source, Term},
   maybe_grow, multi_iterator,
 };
 use std::collections::{BTreeMap, HashSet};
+
+pub const NAME_SEP: &str = "__C";
 
 impl Book {
   /// Extracts combinator terms into new definitions.
@@ -33,11 +35,21 @@ impl Book {
     let mut ctx = FloatCombinatorsCtx::new(&book, max_size);
 
     for (def_name, def) in self.defs.iter_mut() {
-      let builtin = def.builtin;
+      // Don't float combinators in the main entrypoint.
+      // This avoids making programs unexpectedly too lazy,
+      // returning just a reference without executing anything.
+      if let Some(main) = self.entrypoint.as_ref() {
+        if def_name == main {
+          continue;
+        }
+      }
+
+      let source = def.source.clone();
+      let check = def.check;
       let body = &mut def.rule_mut().body;
       ctx.reset();
       ctx.def_size = body.size();
-      body.float_combinators(&mut ctx, def_name, builtin);
+      body.float_combinators(&mut ctx, def_name, source, check);
     }
 
     self.defs.extend(ctx.combinators.into_iter().map(|(nam, (_, def))| (nam, def)));
@@ -73,11 +85,17 @@ impl<'b> FloatCombinatorsCtx<'b> {
 }
 
 impl Term {
-  fn float_combinators(&mut self, ctx: &mut FloatCombinatorsCtx, def_name: &Name, builtin: bool) {
+  fn float_combinators(
+    &mut self,
+    ctx: &mut FloatCombinatorsCtx,
+    def_name: &Name,
+    source: Source,
+    check: bool,
+  ) {
     maybe_grow(|| {
       // Recursively float the grandchildren terms.
       for child in self.float_children_mut() {
-        child.float_combinators(ctx, def_name, builtin);
+        child.float_combinators(ctx, def_name, source.clone(), check);
       }
 
       let mut size = self.size();
@@ -93,22 +111,29 @@ impl Term {
         if child.is_combinator() && child_size > 0 && (!child_is_safe || extract_for_size) {
           ctx.def_size -= child_size;
           size -= child_size;
-          child.float(ctx, def_name, builtin, child_is_safe);
+          child.float(ctx, def_name, source.clone(), check, child_is_safe);
         }
       }
     })
   }
 
   /// Inserts a new definition for the given term in the combinators map.
-  fn float(&mut self, ctx: &mut FloatCombinatorsCtx, def_name: &Name, builtin: bool, is_safe: bool) {
-    let comb_name = Name::new(format!("{}__C{}", def_name, ctx.name_gen));
+  fn float(
+    &mut self,
+    ctx: &mut FloatCombinatorsCtx,
+    def_name: &Name,
+    source: Source,
+    check: bool,
+    is_safe: bool,
+  ) {
+    let comb_name = Name::new(format!("{}{}{}", def_name, NAME_SEP, ctx.name_gen));
     ctx.name_gen += 1;
 
     let comb_ref = Term::Ref { nam: comb_name.clone() };
     let extracted_term = std::mem::replace(self, comb_ref);
 
     let rules = vec![Rule { body: extracted_term, pats: Vec::new() }];
-    let rule = Definition { name: comb_name.clone(), rules, builtin };
+    let rule = Definition::new_gen(comb_name.clone(), rules, source, check);
     ctx.combinators.insert(comb_name, (is_safe, rule));
   }
 }
@@ -120,6 +145,7 @@ impl Term {
   /// - An application or numeric operation where all arguments are safe.
   /// - A safe Lambda, e.g. a nullary constructor or a lambda with safe body.
   /// - A Reference with a safe body.
+  ///
   /// A reference to a recursive definition (or mutually recursive) is not safe.
   fn is_safe(&self, ctx: &mut FloatCombinatorsCtx) -> bool {
     maybe_grow(|| match self {
@@ -144,8 +170,7 @@ impl Term {
 
         // Check if the function it's referring to is safe
         let safe = if let Some(def) = ctx.book.defs.get(nam) {
-          let ref_safe = def.rule().body.is_safe(ctx);
-          ref_safe
+          def.rule().body.is_safe(ctx)
         } else if let Some((safe, _)) = ctx.combinators.get(nam) {
           *safe
         } else {
@@ -161,13 +186,15 @@ impl Term {
     })
   }
 
-  /// Checks if the term is a lambda sequence with the body being a variable in the scope or a reference.
+  /// Checks if the term is a lambda sequence with a safe body.
+  /// If the body is a variable bound in the lambdas, it's a nullary constructor.
+  /// If the body is a reference, it's in inactive position, so always safe.
   fn is_safe_lambda(&self, ctx: &mut FloatCombinatorsCtx) -> bool {
     let mut current = self;
     let mut scope = Vec::new();
 
-    while let Term::Lam { bod, .. } = current {
-      scope.extend(current.pattern().unwrap().binds().filter_map(|x| x.as_ref()));
+    while let Term::Lam { pat, bod, .. } = current {
+      scope.extend(pat.binds().filter_map(|x| x.as_ref()));
       current = bod;
     }
 
@@ -207,9 +234,10 @@ impl Term {
       | Term::Nat { .. }
       | Term::Str { .. }
       | Term::List { .. }
-      | Term::Do { .. }
+      | Term::With { .. }
       | Term::Ask { .. }
       | Term::Open { .. }
+      | Term::Def { .. }
       | Term::Err => unreachable!(),
     }
   }
@@ -236,11 +264,11 @@ impl Term {
           }
         }))
       }
-      Term::Mat { arg, bnd: _, with: _, arms } => {
-        FloatIter::Mat([arg.as_mut()].into_iter().chain(arms.iter_mut().map(|r| &mut r.2)))
-      }
-      Term::Swt { arg, bnd: _, with: _, pred: _, arms } => {
-        FloatIter::Swt([arg.as_mut()].into_iter().chain(arms.iter_mut()))
+      Term::Mat { arg, bnd: _, with_bnd: _, with_arg, arms } => FloatIter::Mat(
+        [arg.as_mut()].into_iter().chain(with_arg.iter_mut()).chain(arms.iter_mut().map(|r| &mut r.2)),
+      ),
+      Term::Swt { arg, bnd: _, with_bnd: _, with_arg, pred: _, arms } => {
+        FloatIter::Swt([arg.as_mut()].into_iter().chain(with_arg.iter_mut()).chain(arms.iter_mut()))
       }
       Term::Fan { els, .. } | Term::List { els } => FloatIter::Vec(els),
       Term::Let { val: fst, nxt: snd, .. }
@@ -255,7 +283,12 @@ impl Term {
       | Term::Ref { .. }
       | Term::Era
       | Term::Err => FloatIter::Zero([]),
-      Term::Do { .. } | Term::Ask { .. } | Term::Bend { .. } | Term::Fold { .. } | Term::Open { .. } => {
+      Term::With { .. }
+      | Term::Ask { .. }
+      | Term::Bend { .. }
+      | Term::Fold { .. }
+      | Term::Open { .. }
+      | Term::Def { .. } => {
         unreachable!()
       }
     }

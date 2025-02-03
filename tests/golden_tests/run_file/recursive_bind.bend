@@ -1,9 +1,9 @@
-Result/bind (Result/Ok val) f = (f val)
+Result/bind (Result/Ok val) f = ((undefer f) val)
 Result/bind err _ = err
 
 Bar x = (Result/Err 0)
 
-Foo x y = do Result {
+Foo x y = with Result {
   ask x = (Bar x);
   (Foo x y)
 }

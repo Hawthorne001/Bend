@@ -6,7 +6,6 @@ Currently Bend supports 3 types of native numbers for fast numeric operations (c
 - I24: Signed integers (24 bits, two's complement)
 - F24: Floating point numbers (single precision IEEE-754 floating point with the last bits of the mantissa implicitly set to zero)
 
-
 ### U24
 
 Unsigned numbers are written as just the number and are represented as a 24 bit unsigned integer.
@@ -14,7 +13,6 @@ Unsigned numbers are written as just the number and are represented as a 24 bit 
 ```rs
 two = 2
 ```
-
 
 ### I24
 
@@ -34,7 +32,7 @@ decimal =     1194684
 binary =      0b100_100_011_101_010_111_100
 hexadecimal = 0x123_abc
 hex_signed = -0xbeef
-
+```
 
 ### F24
 
@@ -49,17 +47,25 @@ zero = 0.0
 minus_zero = -0.0
 ```
 
-
 ### Mixing number types
 
-The three number types are fundamentally different.
-If you mix two numbers of different types HVM will interpret the binary representation of one of them incorrectly, leading to incorrect results. Which number is interpreted incorrectly depends on the situation and shouldn't be relied on for now.
-
-At the HVM level, both type and the operation are stored inside the number nodes as tags. One number stores the type, the other the operation.
+The three number types are fundamentally different. At the HVM level, both type and the operation are stored inside the number nodes as tags. One number stores the type, the other the operation.
 That means that we lose the type information of one of the numbers, which causes this behavior.
-During runtime, the executed numeric function depends on both the type tag and the operation tag. For example, the same tag is used for unsigned bitwise and floating point atan2, so mixing number types can give you very unexpected results.
+During runtime, the executed numeric function depends on both the type tag and the operation tag. For example, the same tag is used for unsigned bitwise and floating point atan2, so if you mix two numbers of different types, HVM will interpret the binary representation of one of them incorrectly, leading to incorrect results. Which number is interpreted incorrectly depends on the situation and shouldn't be relied on for now. Instead, you should make sure that all numbers are of the same type. 
 
-At the moment Bend doesn't have a way to convert between the different number types, but it will be added in the future.
+#### Casting numbers
+
+There is a way to convert between the different number types, and using it is very easy, here's an example:
+
+```py
+def main() -> _:
+  x = f24/to_i24(1.0)
+  y = u24/to_f24(2)
+  z = i24/to_u24(-3)
+
+  return (x, y, z)
+```
+You can find more number casting functions and their declarations at [builtins.md](docs/builtins.md).
 
 
 ### Operations
@@ -75,26 +81,34 @@ some_val = (+ (+ 7 4) (* 2 3))
 
 These are the currently available operations:
 
-Operation | Description | Accepted types | Return type
-----------|-------------|----------------|------------
-+         | Addition    | U24, I24, F24  | Same as arguments
--         | Subtraction | U24, I24, F24  | Same as arguments
-*         | Multiplication | U24, I24, F24  | Same as arguments
-/         | Division | U24, I24, F24  | Same as arguments
-%         | Modulo | U24, I24, F24  | Same as arguments
-==        | Equality | U24, I24, F24  | U24
-!=        | Inequality | U24, I24, F24  | U24
-<         | Less than | U24, I24, F24  | U24
-\>        | Greater than | U24, I24, F24  | U24
-&         | Bitwise and | U24, I24  | Same as arguments
-|         | Bitwise or | U24, I24  | Same as arguments
-^         | Bitwise xor | U24, I24  | Same as arguments
-**        | Exponentiation | F24  | F24
+| Operation | Description              | Accepted types | Return type       |
+| --------- | ------------------------ | -------------- | ----------------- |
+| \+        | Addition                 | U24, I24, F24  | Same as arguments |
+| \-        | Subtraction              | U24, I24, F24  | Same as arguments |
+| \*        | Multiplication           | U24, I24, F24  | Same as arguments |
+| \/        | Division                 | U24, I24, F24  | Same as arguments |
+| \%        | Modulo                   | U24, I24, F24  | Same as arguments |
+| \==       | Equality                 | U24, I24, F24  | U24               |
+| \!=       | Inequality               | U24, I24, F24  | U24               |
+| \<        | Less than                | U24, I24, F24  | U24               |
+| \<=       | Less than or equal to    | U24, I24, F24  | U24               |
+| \>        | Greater than             | U24, I24, F24  | U24               |
+| \>=       | Greater than or equal to | U24, I24, F24  | U24               |
+| \&        | Bitwise and              | U24, I24       | Same as arguments |
+| \|        | Bitwise or               | U24, I24       | Same as arguments |
+| \^        | Bitwise xor              | U24, I24       | Same as arguments |
+| \*\*      | Exponentiation           | F24            | F24               |
 
+### Functions
+
+| Name           | Description                     | Accepted types | Return type |
+| -------------- | ------------------------------- | -------------- | ----------- |
+| `log(x, base)` | Logarithm                       | F24            | F24         |
+| `atan2(x, y)`  | 2 arguments arctangent (atan2f) | F24            | F24         |
 
 ### Pattern matching
 
-HVM-lang also includes a `switch` syntax for pattern-matching U24 numbers.
+Bend also includes a `switch` syntax for pattern-matching U24 numbers.
 
 ```rs
 Number.to_church = λn λf λx
@@ -120,24 +134,22 @@ Number.minus_three = λn λf λx
   }
 ```
 
-
 Using everything we learned, we can write a program that calculates the n-th Fibonacci number using native numbers:
 
-```rs
-fibonacci = λn // n is the argument
+```py
+fibonacci = λn # n is the argument
   switch n {
-    // If the number is 0, then return 0
+    # If the number is 0, then return 0
     0: 0
-    // If the number is 1, then return 1
+    # If the number is 1, then return 1
     1: 1
-    // Otherwise, return the sum of (fib (n-2 + 1)) and (fib n-2)
-    // The successor pattern provides a `var`-`successor number` bind
+    # Otherwise, return the sum of (fib (n-2 + 1)) and (fib n-2)
+    # The successor pattern provides a `var`-`successor number` bind
     _: (+ (fibonacci (+ n-2 1)) (fibonacci n-2))
   }
 
 main = (fibonacci 15)
 ```
-
 
 ### Pattern matching numbers in Fun syntax equations
 

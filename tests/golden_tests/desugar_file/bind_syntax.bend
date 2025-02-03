@@ -1,4 +1,4 @@
-Result/bind (Result/Ok val) f = (f val)
+Result/bind (Result/Ok val) f = ((undefer f) val)
 Result/bind err _ = err
 
 safe_div a b = switch b {
@@ -11,7 +11,7 @@ safe_rem a b = switch b {
   _: (Result/Ok (% a b))
 }
 
-Main = do Result {
+Main = with Result {
   ask y = (safe_div 3 2)
   ask x = (safe_rem y 0);
   x

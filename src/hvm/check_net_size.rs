@@ -1,17 +1,26 @@
-use crate::{diagnostics::Diagnostics, fun::Name};
-use hvmc::ast::Book;
+use super::tree_children;
+use crate::{diagnostics::Diagnostics, fun::Name, CompilerTarget};
+use hvm::ast::{Book, Net, Tree};
 
-pub const MAX_NET_SIZE: usize = 64;
+pub const MAX_NET_SIZE_C: usize = 4095;
+pub const MAX_NET_SIZE_CUDA: usize = 64;
 
-pub fn check_net_sizes(book: &Book, diagnostics: &mut Diagnostics) -> Result<(), Diagnostics> {
-  diagnostics.start_pass();
-
-  for (name, net) in &book.nets {
+pub fn check_net_sizes(
+  book: &Book,
+  diagnostics: &mut Diagnostics,
+  target: &CompilerTarget,
+) -> Result<(), Diagnostics> {
+  let (net_size_bound, target_lang) = match target {
+    CompilerTarget::Cuda => (MAX_NET_SIZE_CUDA, "Cuda"),
+    _ => (MAX_NET_SIZE_C, "C"),
+  };
+  for (name, net) in &book.defs {
     let nodes = count_nodes(net);
-    if nodes > MAX_NET_SIZE {
-      diagnostics.add_rule_error(
-        format!("Definition is too large for hvm (size={nodes}, max size={MAX_NET_SIZE}). Please break it into smaller pieces."),
+    if nodes > net_size_bound {
+      diagnostics.add_function_error(
+        format!("Definition is too large for HVM {target_lang} (size={nodes}, max size={net_size_bound}). Please break it into smaller pieces."),
         Name::new(name),
+        Default::default()
       );
     }
   }
@@ -20,19 +29,19 @@ pub fn check_net_sizes(book: &Book, diagnostics: &mut Diagnostics) -> Result<(),
 }
 
 /// Utility function to count the amount of nodes in an hvm-core AST net
-pub fn count_nodes<'l>(net: &'l hvmc::ast::Net) -> usize {
-  let mut visit: Vec<&'l hvmc::ast::Tree> = vec![&net.root];
+pub fn count_nodes(net: &Net) -> usize {
+  let mut visit: Vec<&Tree> = vec![&net.root];
   let mut count = 0usize;
-  for (_, l, r) in &net.redexes {
+  for (_, l, r) in &net.rbag {
     visit.push(l);
     visit.push(r);
   }
   while let Some(tree) = visit.pop() {
     // If it is not 0-ary, then we'll count it as a node.
-    if tree.children().next().is_some() {
+    if tree_children(tree).next().is_some() {
       count += 1;
     }
-    for subtree in tree.children() {
+    for subtree in tree_children(tree) {
       visit.push(subtree);
     }
   }

@@ -1,47 +1,59 @@
 # Defining data types
 
-It is possible to easily define complex data types using the `data` keyword.
+It is possible to easily define complex data types using the `type` keyword.
 
-```rs
-// A Boolean is either True or False
-data Bool = True | False
+```py
+# A Boolean is either True or False 
+type Bool:
+  True
+  False
 ```
 
 If a constructor has any arguments, parentheses are necessary around it:
-```rs
-// An option either contains some value, or None
-data Option = (Some val) | None
+```py
+# An option either contains some value, or None
+type Option:
+ Some { value }
+ None
+```
+If the data type has a single constructor, it can be destructured using `open`:
+
+```py
+# A Box is a wrapper around a value.
+type Boxed:
+  Box { value }
+
+def main() -> _:
+  b = Boxed/Box(1)
+  open Boxed: b
+  return b.value
 ```
 
-If the data type has a single constructor, it can be destructured using `let`:
-```rs
-// A Box is a wrapper around a value.
-data Boxed = (Box val)
-
-let (Box value) = boxed; value
-```
 
 The fields of the constructor that is being destructured with the `match` are bound to the matched variable plus `.` and the field names.
-```rs
-Option.map = λoption λf
-  match option {
-    Some: (Some (f option.val))
-    None: None
-  }
+```py
+opt = Option/Some(1)
+match opt:
+  case Option/Some:
+    return opt.value
+  case Option/None:
+    return 0
 ```
 
 Rules can also have patterns.
 They work like match expressions with explicit bindings:
 
-```rs
+```py
 (Option.map (Some value) f) = (Some (f value))
 (Option.map None f) = None
 ```
 
 However, they also allow matching on multiple values at once, which is something that regular `match` can't do:
 
-```rs
-data Boolean = True | False
+```py
+type Boolean:
+  True
+  False
 
 (Option.is_both_some (Some lft_val) (Some rgt_val)) = True
 (Option.is_both_some lft rgt) = False
@@ -49,4 +61,4 @@ data Boolean = True | False
 
 You can read more about pattern matching rules in [Pattern matching](/docs/pattern-matching.md).
 
-In conclusion, the `data` keyword is very useful as it allows you to easily create data types and deconstruct them.
+In conclusion, the `type` keyword is very useful as it allows you to easily create data types and deconstruct them.

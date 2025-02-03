@@ -6,13 +6,29 @@ Click [here](#imp-syntax) to see the syntax for "imp", the variant of bend that 
 
 Click [here](#fun-syntax) to see the syntax for "fun", the variant of bend that looks like a functional language like Haskell or ML.
 
+Click [here](#import-syntax) to see the import syntax.
+
+Click [here](#comments) to see the syntax for commenting code.
+
+Click [here](#imp-type-syntax) to see the imperative type syntax.
+
+Click [here](#fun-type-syntax) to see the functional type syntax.
+
 Both syntaxes can be mixed in the same file like the example below:
 
 ```python
 object Point { x, y }
 
-data Tree = (Node ~left ~right) | (Leaf value)
+type MyTree = (Node ~left ~right) | (Leaf value)
 
+type Bool:
+  True
+  False
+
+#{
+  The identity function is a function that always returns the value that
+  was used as its argument.
+#}
 def identity(x):
   return x
 
@@ -32,20 +48,27 @@ main =
 Defines a top level function.
 
 ```python
-def add(x, y):
+def add(x: u24, y: u24) -> u24:
   result = x + y
   return result
 
-def main:
-  return add(40, 2)
+def unchecked two() -> u24:
+  return 2
+
+def main() -> u24:
+  return add(40, two)
 ```
 
 A function definition is composed by a name, a sequence of parameters and a body.
 
-A top-level name can be anything matching the regex `[A-Za-z0-9_.-/]+`, except it can't have `__` (used for generated names).
+A top-level name can be anything matching the regex `[A-Za-z0-9_.-/]+`, except it can't have `__` (used for generated names) or start with `//`.
 
 The last statement of each function must either be a `return` or a selection statement (`if`, `switch`, `match`, `fold`)
 where all branches `return`.
+
+Each parameter of the function can receive a type annotation with `param_name: type` and the return value of the function can also be annotated with `def fn_name(args) -> return_type:`.
+
+We can force the type-checker to run or not on a specific function by adding `checked` or `unchecked` between `def` and the function name.
 
 ### Type
 
@@ -56,14 +79,16 @@ type Option:
   Some { value }
   None
 
-type Tree:
-  Node { value, ~left, ~right }
+type Tree(T):
+  Node { value: T, ~left: Tree(T), ~right: Tree(T) }
   Leaf
 ```
 
 Type names must be unique, and should have at least one constructor.
 
-Each constructor is defined by a name followed by its fields.
+For a generic or polymorphic type, all type variables used in the constructors must be declared first in the type definition with `type Name(type_var1, ...):`
+
+Each constructor is defined by a name followed by its fields. The fields can be annotated with types that will be checked when creating values of that type.
 
 The `~` notation indicates a recursive field. To use `fold` statements with a type its recursive fields must be correctly marked with `~`.
 
@@ -77,9 +102,9 @@ Read [defining data types](./defining-data-types.md) to know more.
 Defines a type with a single constructor (like a struct, a record or a class).
 
 ```python
-object Pair { fst, snd }
+object Pair(A, B) { fst: A, snd: B }
 
-object Function { name, args, body }
+object Function(T) { name: String, args, body: T }
 
 object Vec { len, data }
 ```
@@ -108,6 +133,8 @@ It's possible to assign to a pattern, like a tuple or superposition, which will 
 
 ```python
 (first, second) = (1, 2)
+
+first, second = 1, 2
 ```
 
 ### Use
@@ -138,6 +165,17 @@ The operations are:
 - Subtraction `-=`
 - Multiplication `*=`
 - Division `/=`
+- Bit And `&=`
+- Bit Or `|=`
+- Bit Xor `^=`
+- Mapper `@=`
+
+The mapper in-place operation applies a function and re-assigns the variable:
+
+```python
+x = "hello"
+x @= String/uppercase
+```
 
 ### Return
 
@@ -189,10 +227,25 @@ A branching statement where `else` is mandatory.
 
 The condition must return a `u24` number, where 0 will run the `else` branch and any other value will return the first one.
 
+It is possible to make if-chains using `elif`:
+
+```python
+if condition1:
+  return 0
+elif condition2:
+  return 1
+elif condition3:
+  return 2
+else:
+  return 3
+```
+
+The conditions are evaluated in order, one by one, stopping at the first successful case.
+
 ### Switch
 
 ```python
-switch x = 4:
+switch x = 5:
   case 0:
     return 6
   case 1:
@@ -207,7 +260,7 @@ catches all values not explicitly enumerated. Switches may only be used with nat
 
 In the last case, the predecessor value is available with the name `bound_var-next_num`, where `bound_var` is the variable
 set by the condition and `next_num` is the expected value of the next case. For example, the above example code returns
-`5`, since `x-2` is bound to `5` and the value of `x` doesn't match any explicit case.
+`3`, since `x-2` is bound to `5 - 2` and the value of `x` doesn't match any explicit case.
 
 This switch statement is equivalent to the `if` from the previous section:
 
@@ -238,10 +291,10 @@ It is possible to bind a variable name to the matching value. The fields of the 
 ### Fold
 
 ```python
-fold x = Tree/leaf:
-  case Tree/node:
+fold x = Tree/Leaf:
+  case Tree/Node:
     return x.value + x.left + x.right
-  case Tree/leaf:
+  case Tree/Leaf:
     return 0
 ```
 
@@ -254,7 +307,7 @@ For fields notated with `~` in the type definition, the fold function is called 
 It is equivalent to the inline recursive function:
 
 ```python
-def fold(x):
+def fold(x: Tree(u24)) -> u24:
   match x:
     case Tree/Node:
       return x.value + fold(x.left) + fold(x.right)
@@ -324,38 +377,83 @@ match p:
     ...
 ```
 
-### Do
+### With block
 
 ```python
-do Result:
+with Result:
   x <- safe_div(2, 0)
   return x
 ```
 
-A monadic do block.
+A monadic `with` block.
 
 Where `x <- ...` performs a monadic operation.
 
-Expects `Result` to be a type defined with `type` and a function `Result/bind` to be defined.
+Expects `Result` to be a type defined with `type` or `object` and the function `Result/bind` to be defined.
 The monadic bind function should be of type `(Result a) -> (a -> Result b) -> Result b`, like this:
 
 ```python
 def Result/bind(res, nxt):
   match res:
-    case Result/ok:
+    case Result/Ok:
+      nxt = undefer(nxt)
       return nxt(res.value)
-    case Result/err:
+    case Result/Err:
       return res
 ```
 
-Other statements are allowed inside the `do` block and it can both return a value at the end and bind a variable, like branching statements do.
+However, the second argument, `nxt`, is actually a deferred call to the continuation, passing any free variables as arguments.
+Therefore, all `bind` functions must call the builtin function `undefer` before using the value of `nxt`, as in the example above.
+This is necessary to ensure that the continuation in recursive monadic functions stays lazy and doesn't expand infinitely.
+
+This is an example of a recursive function that would loop if passing the variable `a` to the recursive call `Result/foo(a, b)` was not deferred:
+
+```python
+def Result/foo(x, y):
+  with Result:
+    a <- Result/Ok(1)
+    if b:
+      b = Result/Err(x)
+    else:
+      b = Result/Ok(y)
+    b <- b
+    return Result/foo(a, b)
+```
+
+Other statements are allowed inside the `with` block and it can both return a value at the end and bind a variable, like branching statements do.
 
 ```python
 # Also ok:
-do Result:
+with Result:
   x <- safe_div(2, 0);
   y = x
 return y
+```
+
+The name `wrap` is bound inside a `with` block as a shorthand for `Type/wrap`,
+and it calls the unit function of the monad, also called `pure` in some languages:
+
+```python
+def Result/wrap(x):
+  return Result/Ok(x)
+
+with Result:
+  x <- some_operation(...)
+  y <- some_operation(...)
+  return wrap(x * y)
+```
+
+### Def
+
+Creates a local function visible in the current block capturing variables:
+
+```python
+def main() -> _:
+  y = 41
+  x = 1
+  def aux_add(x):
+    return x + y
+  return aux_add(x)
 ```
 
 ## Expressions
@@ -368,7 +466,10 @@ some_var
 foo/bar
 ```
 
-A variable can be anything matching the regex `[A-Za-z0-9_.-/]+`.
+A variable can be anything matching the regex `[A-Za-z0-9_.-/]+` but with some restrictions:
+
+- It can not start with `//`
+- It can not contain `__`
 
 A variable is a name for some immutable expression. It is possible to rebind variables with the same name.
 
@@ -480,23 +581,39 @@ i24 = -42
 u24 = 42
 ```
 
-Currently, the 3 number types cannot be mixed.
+Currently, We can't write operations that mix two types of number but we can explicitly convert between them.
 
-| Operation      | Syntax   | Supported Types  |
-| -------------- | -------- | ---------------- |
-| Addition       | x + y    | int, float, uint |
-| Subtraction    | x - y    | int, float, uint |
-| Multiplication | x \* y   | int, float, uint |
-| Division       | x / y    | int, float, uint |
-| Remainder      | x % y    | int, float, uint |
-| Exponentiation | x \*\* y | float            |
-| Equal          | x == y   | int, float, uint |
-| Not Equal      | x != y   | int, float, uint |
-| Less Than      | x < y    | int, float, uint |
-| Greater Than   | x > y    | int, float, uint |
-| Bitwise And    | x & y    | int, uint        |
-| Bitwise Or     | x \| y   | int, uint        |
-| Bitwise Xor    | x ^ y    | int, uint        |
+| Operation             | Syntax   | Supported Types  |
+| --------------------- | -------- | ---------------- |
+| Addition              | x + y    | int, float, uint |
+| Subtraction           | x - y    | int, float, uint |
+| Multiplication        | x \* y   | int, float, uint |
+| Division              | x / y    | int, float, uint |
+| Remainder             | x % y    | int, float, uint |
+| Exponentiation        | x \*\* y | float            |
+| Equal                 | x == y   | int, float, uint |
+| Not Equal             | x != y   | int, float, uint |
+| Less Than             | x < y    | int, float, uint |
+| Greater Than          | x > y    | int, float, uint |
+| Less Than or Equal    | x <= y   | int, float, uint |
+| Greater Than or Equal | x >= y   | int, float, uint |
+| Bitwise And           | x & y    | int, uint        |
+| Bitwise Or            | x \| y   | int, uint        |
+| Bitwise Xor           | x ^ y    | int, uint        |
+| Bitwise Right Shift   | x >> y   | uint             |
+| Bitwise Left Shift    | x << y   | uint             |
+
+Hexadecimal and binary floating-point literals are also supported.
+
+In these representations, each digit after the point is divided according to the base’s power of the digit's position.
+Specifically, for hexadecimal floating-point numbers, each place after the dot represents a fraction of 16 to the power of the digit's depth.
+Similarly, for binary floating-point numbers, each place after the dot represents a fraction of 2 to the power of the digit's depth.
+
+```python
+0xA.A == 10.625
+
+0b111.111 == 7.875
+```
 
 ### Constructor Literals
 
@@ -558,6 +675,18 @@ A List literal is surrounded by `[` `]`. The elements must be separated by `,`.
 
 It is desugared to constructor calls of the built-in type List, `List/cons(head, ~tail)` and `List/nil` .
 
+### Tree Literals
+
+```python
+![![1, 2], ![3, 4]]
+```
+
+The Tree literals `![]` and `!` are used to create values of the built-in type `Tree`.
+
+`![a b]` is equivalent to `Tree/Node(a, b)`.
+
+`!x` is equivalent to `Tree/Leaf(x)`.
+
 ### Map Literals
 
 ```python
@@ -606,7 +735,7 @@ fold list:
 ## Top-level definitions
 
 ```rust
-data Name
+type Name
   = (Ctr1 arg1 arg2)
   | Ctr2
 
@@ -614,7 +743,7 @@ Name (Ctr1 sub_arg1 sub_arg2) arg3 = rule0_body
 Name Ctr2 arg3 = rule1_body
 ```
 
-A top-level name can be anything matching the regex `[A-Za-z0-9_.-/]+`, except it can't have `__` (used for generated names).
+A top-level name can be anything matching the regex `[A-Za-z0-9_.-/]+`, except it can't have `__` (used for generated names) or start with `//`.
 
 ### Function Definitions
 
@@ -656,12 +785,12 @@ The rule body is a term, there are no statements in the Fun variant of Bend.
 
 Read [pattern matching](./pattern-matching.md) to learn about what exactly the rules for pattern matching equations are.
 
-### Datatype
+### Type
 
 Defines an Algebraic Data Type, it should have at least one constructor.
 
 ```rust
-data Tree
+type Tree
   = (Leaf value)
   | (Node ~left ~right)
   | Nil
@@ -677,7 +806,10 @@ The constructors inherit the name of their types and become functions (`Tree/Nod
 
 ### Variables
 
-A variable can be anything matching the regex `[A-Za-z0-9_.-/]+`.
+A variable can be anything matching the regex `[A-Za-z0-9_.-/]+` but with some restrictions:
+
+- It can not start with `//`
+- It can not contain `__`
 
 A variable is a name for some immutable expression. It is possible to rebind variables with the same name.
 
@@ -811,6 +943,10 @@ A switch for native numbers, it can hold a name binding if the matching term is 
 
 The cases need to be typed from `0` to a wildcard `_` in sequence.
 
+In the last case, the predecessor value is available with the name `bound_var-next_num`, where `bound_var` is the variable
+set by the condition and `next_num` is the expected value of the next case. For example, the above example code returns
+`1`, since `x-1` is bound to `(+ 1 1) - 1` and the value of `x` doesn't match any explicit case.
+
 Using `;` is optional.
 
 ### Match
@@ -850,6 +986,20 @@ It is equivalent to this switch:
 switch _ = condition {
   0: else
   _: then
+}
+```
+
+It is possible to make if-chains using `elif`:
+
+```rust
+if condition1 {
+  0
+} elif condition2 {
+  1
+} elif condition3 {
+  2
+} else {
+  3
 }
 ```
 
@@ -912,33 +1062,51 @@ match x {
 }
 ```
 
-### Monadic bind blocks
+### With block
 
 ```rust
-Result/bind (Result.ok val) f = (f val)
-Result/bind err _ = err
+Result/bind (Result/Ok val) nxt = ((undefer nxt) val)
+Result/bind err _nxt = err
 
 div a b = switch b {
-  0: (Result.err "Div by 0")
-  _: (Result.ok (/ a b))
+  0: (Result/Err "Div by 0")
+  _: (Result/Ok (/ a b))
 }
 
 rem a b = switch b {
-  0: (Result.err "Mod by 0")
-  _: (Result.ok (% a b))
+  0: (Result/Err "Mod by 0")
+  _: (Result/Ok (% a b))
 }
 
-Main = do Result {
+Main = with Result {
   ask y = (div 3 2);
   ask x = (rem y 0);
   x
 }
 ```
 
-Receives a type defined with `data` or `type` and expects `Result/bind` to be defined as a monadic bind function.
+Receives a type defined with `type` and expects `Result/bind` to be defined as a monadic bind function.
 It should be of type `(Result a) -> (a -> Result b) -> Result b`, like in the example above.
 
-Inside a `do` block, you can use `ask`, to access the continuation value of the monadic operation.
+However, the second argument, `nxt`, is actually a deferred call to the continuation, passing any free variables as arguments.
+Therefore, all `bind` functions must call the builtin function `undefer` before using the value of `nxt`, as in the example above.
+This is necessary to ensure that the continuation in recursive monadic functions stays lazy and doesn't expand infinitely.
+
+This is an example of a recursive function that would loop if passing the variable `a` to the recursive call `Result/foo(a, b)` was not deferred:
+
+```python
+Result/foo x y = with Result {
+  ask a = (Result/Ok 1)
+  ask b = if b {
+    (Result/Err x)
+  } else {
+    (Result/Ok y)
+  }
+  (Result/foo a b)
+}
+```
+
+Inside a `with` block, you can use `ask`, to access the continuation value of the monadic operation.
 
 ```rust
 ask y = (div 3 2)
@@ -950,6 +1118,31 @@ x
 ```
 
 It can be used to force a sequence of operations. Since the continuation receives the result through a lambda, it is only fully evaluated after something is applied to it.
+
+The name `wrap` is bound inside a `with` block as a shorthand for `Type/wrap`,
+the equivalent as a `pure` function in other functional languages:
+
+```rust
+Result/wrap x = (Result/Ok x)
+
+with Result {
+  ask x = (some_operation ...)
+  ask y = (some_operation ...)
+  (wrap (* x y))
+}
+```
+
+### Def
+
+Creates a local function visible in the current block capturing variables:
+
+```rust
+main =
+  let base = 0
+  def aux [] = base
+      aux (List/Cons head tail) = (+ head (aux tail))
+  (aux [1, 2, 3])
+```
 
 ### Numbers and operations
 
@@ -965,21 +1158,37 @@ u24 = 42
 
 Currently, the 3 number types cannot be mixed.
 
-| Operation      | Syntax     | Supported Types  |
-| -------------- | ---------- | ---------------- |
-| Addition       | (+ x y)    | int, float, uint |
-| Subtraction    | (- x y)    | int, float, uint |
-| Multiplication | (\* x y)   | int, float, uint |
-| Division       | (/ x y)    | int, float, uint |
-| Remainder      | (% x y)    | int, float, uint |
-| Exponentiation | (\*\* x y) | float            |
-| Equal          | (== x y)   | int, float, uint |
-| Not Equal      | (!= x y)   | int, float, uint |
-| Less Than      | (< x y)    | int, float, uint |
-| Greater Than   | (> x y)    | int, float, uint |
-| Bitwise And    | (& x y)    | int, uint        |
-| Bitwise Or     | (\| x y)   | int, uint        |
-| Bitwise Xor    | (^ x y)    | int, uint        |
+| Operation             | Syntax     | Supported Types  |
+| --------------------- | ---------- | ---------------- |
+| Addition              | (+ x y)    | int, float, uint |
+| Subtraction           | (- x y)    | int, float, uint |
+| Multiplication        | (\* x y)   | int, float, uint |
+| Division              | (/ x y)    | int, float, uint |
+| Remainder             | (% x y)    | int, float, uint |
+| Exponentiation        | (\*\* x y) | float            |
+| Equal                 | (== x y)   | int, float, uint |
+| Not Equal             | (!= x y)   | int, float, uint |
+| Less Than             | (< x y)    | int, float, uint |
+| Greater Than          | (> x y)    | int, float, uint |
+| Less Than or Equal    | (<= x y)   | int, float, uint |
+| Greater Than or Equal | (>= x y)   | int, float, uint |
+| Bitwise And           | (& x y)    | int, uint        |
+| Bitwise Or            | (\| x y)   | int, uint        |
+| Bitwise Xor           | (^ x y)    | int, uint        |
+| Bitwise Right Shift   | (>> x y)   | uint             |
+| Bitwise Left Shift    | (<< x y)   | uint             |
+
+Hexadecimal and binary floating-point literals are also supported.
+
+In these representations, each digit after the point is divided according to the base’s power of the digit's position.
+Specifically, for hexadecimal floating-point numbers, each place after the dot represents a fraction of 16 to the negative power of the digit's depth.
+Similarly, for binary floating-point numbers, each place after the dot represents a fraction of 2 to the negative power of the digit's depth.
+
+```python
+(== 0xA.A 10.625)
+
+(== 0b111.111 7.875)
+```
 
 ### Character Literal
 
@@ -1030,6 +1239,18 @@ The syntax above is desugared to:
 
 Using `,` is optional.
 
+### Tree Literals
+
+```python
+![![1, 2], ![3, 4]]
+```
+
+The Tree literals `![]` and `!` are used to create values of the built-in type `Tree`.
+
+`![a b]` is equivalent to `Tree/Node(a, b)`.
+
+`!x` is equivalent to `Tree/Leaf(x)`.
+
 ### Nat Literal
 
 ```rust
@@ -1039,5 +1260,348 @@ Using `,` is optional.
 The syntax above is desugared to:
 
 ```
-(Nat.succ (Nat.succ (Nat.succ List.nil)))
+(Nat/succ (Nat/succ (Nat/succ Nat/zero)))
+```
+
+# Native HVM definitions
+
+```py
+# This function causes two ports to be linked and returns *.
+# This can be used to interpret a lambda as an application and apply something to it for example.
+# It can be used like this: `let * = (link_ports @x x y)`
+hvm link_ports:
+  (a (b *))
+  & (c a) ~ (d e)
+  & (e b) ~ (d c)
+
+# Casts a `u24` to itself.
+# We can give type annotations to HVM definitions.
+hvm u24_to_u24 -> (u24 -> u24):
+  ($([u24] ret) ret)
+```
+
+It's also possible to define functions using HVM syntax. This can be
+thought of as a way to write "HVM assembly" directly in a Bend program.
+You can find the reference of this syntax in the [HVM paper](https://github.com/HigherOrderCO/HVM/blob/main/paper/PAPER.pdf).
+
+This is meant for writing things that would otherwise be hard or
+impossible to write in normal Bend syntax.
+
+It will also ignore all term-level compiler passes and so can be
+useful for writing programs with exact behaviour that won't ever be
+changed or optimized by the compiler.
+
+<div id="import-syntax"></div>
+
+# Import Syntax
+
+### Import Relative to the File
+
+Paths starting with `./` or `../` are imported relative to the file.
+
+### Import Relative to the Main Folder
+
+Paths that do not start with `./` or `../` are relative to the folder of the main file.
+
+## Syntax
+
+### Import Specific Names from a File, or Files from a Folder
+
+```py
+from path import name
+from path import (name1, name2)
+import (path/name1, path/name2)
+```
+
+### Import All Names from a File, or All Files from a Folder
+
+```py
+from path import *
+```
+
+### Aliasing Imports
+
+```py
+from path import name as alias
+from path import (name1 as Alias1, name2 as Alias2)
+import path as alias
+import (path/name1 as Alias1, path/name2 as Alias2)
+```
+
+<div id="comments"></div>
+
+# Comments
+
+## Syntax
+
+### Single Line Comment
+
+Use `#` to indicate a single line comment.
+
+```py
+# Single line comment
+
+def main():
+  # return 0
+```
+
+### Multi Line Comment
+
+Use `#{ ... #}` to indicate a multi-line comment.
+
+Multi-line commenting should also be used to document code.
+Documentation for functions is meant to be written as a multiline comment right above the function.
+```py
+#{
+  Expects two arguments to be passed.
+
+  This function always returns the second value that was used as argument.
+#}
+def second(x: A, y: B) -> B:
+  return y
+```
+
+<div id="imp-type-syntax"></div>
+
+# Imp Type Syntax
+
+## Variable
+
+Any name represents a type variable.
+
+Used in generic or polymorphic type definitions.
+
+```python
+# T is a type variable
+type Option(T):
+  Some { value: T }
+  None
+
+# A is a type variable
+def id(x: A) -> A:
+  return x
+```
+
+## Constructor
+
+`Ctr(...)` represents a constructor type.
+
+Used for defining custom data types or algebraic data types.
+Can contain other types as parameters.
+
+```python
+def head(list: List(T)) -> Option(T)
+  match list:
+    case List/Nil:
+      return Option/None
+    case List/Cons:
+      return Option/Some(list.head)
+```
+
+## Any
+
+`Any` represents the untyped type.
+
+It accepts values of alls type and will forcefully cast any type to `Any`.
+
+Can be used for values that can't be statically typed, either because
+they are unknown (like in raw IO calls), because they contain untypable
+expressions (like unscoped variables), or because the expression cannot
+be typed with the current type system (like the self application `lambda x: x(x)`).
+
+```python
+def main -> Any:
+  return 24
+```
+
+## None
+
+`None` represents the eraser `*` or absence of a value.
+
+Often used to indicate that a function doesn't return anything.
+
+```python
+def none -> None:
+  return *
+```
+
+## Hole
+
+`_` represents a hole type.
+
+This will let the type checker infer the most general type for an argument or return value.
+
+```python
+def increment(x: _) -> _:
+  return x + 1
+```
+
+## u24
+
+`u24` represents an unsigned 24-bit integer.
+
+```python
+def zero -> u24:
+  return 0
+```
+
+## i24
+
+`i24` represents a signed 24-bit integer.
+
+```python
+def random_integer -> i24:
+  return -42
+```
+
+## f24
+
+`f24` represents a 24-bit floating-point number.
+
+```python
+def PI -> f24:
+  return 3.14
+```
+
+## Tuple
+
+`(_, _, ...)` represents a tuple type.
+
+Can contain two or more types separated by commas.
+
+```python
+def make_tuple(fst: A, snd: B) -> (A, B):
+  return (fst, snd)
+```
+
+## Function
+
+`a -> b` represents a function type.
+
+`a` is the input type, and `b` is the output type.
+
+```python
+def apply(f: A -> B, arg: A) -> B:
+  return f(arg)
+```
+
+<div id="fun-type-syntax"></div>
+
+# Fun Type Syntax
+
+## Variable
+
+Any name represents a type variable.
+
+Used in generic or polymorphic type definitions.
+
+```python
+# T is a type variable
+type (Option T)
+  = (Some T)
+  | None
+
+# A is a type variable
+id : A -> A
+id x = x
+```
+
+## Constructor
+
+`(Ctr ...)` represents a constructor type.
+
+Used for defining custom data types or algebraic data types.
+Can contain other types as parameters.
+
+```python
+head : (List T) -> (Option T)
+head [] = Option/None
+head (List/Cons head _) = (Option/Some head)
+```
+
+## Any
+
+`Any` represents the untyped type.
+
+It accepts values of alls type and will forcefully cast any type to `Any`.
+
+Can be used for values that can't be statically typed, either because
+they are unknown (like in raw IO calls), because they contain untypable
+expressions (like unscoped variables), or because the expression cannot
+be typed with the current type system (like the self application `λx (x x)`).
+
+```python
+main : Any
+main = @x x
+```
+
+## None
+
+`None` represents the eraser `*` or absence of a value.
+
+Often used to indicate that a function doesn't return anything.
+
+```python
+none : None
+none = *
+```
+
+## Hole
+
+`_` represents a hole type.
+
+This will let the type checker infer the most general type for an argument or return value.
+
+```python
+increment : _ -> _
+increment x = (+ x 1)
+```
+
+## u24
+
+`u24` represents an unsigned 24-bit integer.
+
+```python
+zero : u24
+zero = 0
+```
+
+## i24
+
+`i24` represents a signed 24-bit integer.
+
+```python
+random_integer : i24
+random_integer = -24
+```
+
+## f24
+
+`f24` represents a 24-bit floating-point number.
+
+```python
+PI : f24
+PI = 3.14
+```
+
+## Tuple
+
+`(_, _, ...)` represents a tuple type.
+
+Can contain two or more types separated by commas.
+
+```python
+make_tuple : A -> B -> (A, B)
+make_tuple fst snd = (fst, snd)
+```
+
+## Function
+
+`a -> b` represents a function type.
+
+`a` is the input type, and `b` is the output type.
+
+```python
+apply : (A -> B) -> A -> B
+apply f arg = (f arg)
 ```

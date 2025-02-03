@@ -1,4 +1,4 @@
-pub mod hvmc_to_net;
+pub mod hvm_to_net;
 
 use crate::fun::Name;
 pub type BendLab = u16;
@@ -36,7 +36,7 @@ pub enum NodeKind {
   /// Numeric operations
   Opr,
   /// Pattern matching on numbers
-  Mat,
+  Swi,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,12 +56,6 @@ impl CtrKind {
       CtrKind::Tup(Some(_)) => todo!("Tagged tuples not implemented for hvm32"),
       CtrKind::Dup(0) => 1,
       CtrKind::Dup(_) => todo!("Tagged dups/sups not implemented for hvm32"),
-    }
-  }
-  fn from_lab(lab: u16) -> Self {
-    match lab {
-      0 => CtrKind::Con(None),
-      n => CtrKind::Dup(n - 1),
     }
   }
 }
@@ -97,7 +91,7 @@ impl INet {
 
   /// Returns the value stored at a port, the port on the other side of the given one.
   pub fn enter_port(&self, port: Port) -> Port {
-    self.node(port.node()).port(port.slot())
+    self.node(port.node_id()).port(port.slot())
   }
 
   /// Links two ports.
@@ -108,7 +102,7 @@ impl INet {
 
   /// Sets a port to point to another port
   pub fn set(&mut self, src: Port, dst: Port) {
-    *self.nodes[src.node() as usize].port_mut(src.slot()) = dst;
+    *self.nodes[src.node_id() as usize].port_mut(src.slot()) = dst;
   }
 }
 
@@ -146,7 +140,7 @@ impl Node {
 
 impl Port {
   /// Returns the node address of a port.
-  pub fn node(self) -> NodeId {
+  pub fn node_id(self) -> NodeId {
     self.0
   }
 

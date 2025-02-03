@@ -1,12 +1,11 @@
 use crate::{
   diagnostics::{DiagnosticOrigin, Diagnostics, Severity},
-  fun::{term_to_net::Labels, Book, FanKind, Name, Op, Pattern, Tag, Term},
+  fun::{term_to_net::Labels, Book, FanKind, Name, Num, Op, Pattern, Tag, Term},
   maybe_grow,
-  net::{CtrKind, INet, NodeId, NodeKind, Port, SlotId, ROOT},
+  net::{BendLab, CtrKind, INet, NodeId, NodeKind, Port, SlotId, ROOT},
 };
+use hvm::hvm::Numb;
 use std::collections::{BTreeSet, HashMap, HashSet};
-
-use super::Num;
 
 /// Converts an Interaction-INet to a Lambda Calculus term
 pub fn net_to_term(
@@ -20,6 +19,7 @@ pub fn net_to_term(
     net,
     labels,
     book,
+    recursive_defs: &book.recursive_defs(),
     dup_paths: if linear { None } else { Some(Default::default()) },
     scope: Default::default(),
     seen_fans: Default::default(),
@@ -73,6 +73,7 @@ pub struct Reader<'a> {
   seen_fans: Scope,
   seen: HashSet<Port>,
   errors: Vec<ReadbackError>,
+  recursive_defs: &'a BTreeSet<Name>,
 }
 
 impl Reader<'_> {
@@ -85,229 +86,15 @@ impl Reader<'_> {
         return Term::Var { nam: Name::new("...") };
       }
 
-      let node = next.node();
+      let node = next.node_id();
       match &self.net.node(node).kind {
-        NodeKind::Era => {
-          // Only the main port actually exists in an ERA, the aux ports are just an artifact of this representation.
-          debug_assert!(next.slot() == 0);
-          Term::Era
-        }
-        // If we're visiting a con node...
-        NodeKind::Ctr(CtrKind::Con(lab)) => match next.slot() {
-          // If we're visiting a port 0, then it is a tuple or a lambda.
-          0 => {
-            if self.is_tup(node) {
-              // A tuple
-              let lft = self.read_term(self.net.enter_port(Port(node, 1)));
-              let rgt = self.read_term(self.net.enter_port(Port(node, 2)));
-              Term::Fan { fan: FanKind::Tup, tag: self.labels.con.to_tag(*lab), els: vec![lft, rgt] }
-            } else {
-              // A lambda
-              let nam = self.namegen.decl_name(self.net, Port(node, 1));
-              let bod = self.read_term(self.net.enter_port(Port(node, 2)));
-              Term::Lam {
-                tag: self.labels.con.to_tag(*lab),
-                pat: Box::new(Pattern::Var(nam)),
-                bod: Box::new(bod),
-              }
-            }
-          }
-          // If we're visiting a port 1, then it is a variable.
-          1 => Term::Var { nam: self.namegen.var_name(next) },
-          // If we're visiting a port 2, then it is an application.
-          2 => {
-            let fun = self.read_term(self.net.enter_port(Port(node, 0)));
-            let arg = self.read_term(self.net.enter_port(Port(node, 1)));
-            Term::App { tag: self.labels.con.to_tag(*lab), fun: Box::new(fun), arg: Box::new(arg) }
-          }
-          _ => unreachable!(),
-        },
-        NodeKind::Mat => match next.slot() {
-          2 => {
-            // Read the matched expression
-            let arg = self.read_term(self.net.enter_port(Port(node, 0)));
-            let bnd = if let Term::Var { nam } = &arg { nam.clone() } else { self.namegen.unique() };
-
-            // Read the pattern matching node
-            let sel_node = self.net.enter_port(Port(node, 1)).node();
-
-            // We expect the pattern matching node to be a CON
-            let sel_kind = &self.net.node(sel_node).kind;
-            let (zero, succ) = if *sel_kind == NodeKind::Ctr(Con(None)) {
-              let zero_term = self.read_term(self.net.enter_port(Port(sel_node, 1)));
-              let mut succ_term = self.read_term(self.net.enter_port(Port(sel_node, 2)));
-
-              match &mut succ_term {
-                Term::Lam { pat: box Pattern::Var(nam), bod, .. } => {
-                  let mut bod = std::mem::take(bod.as_mut());
-                  if let Some(nam) = &nam {
-                    bod.subst(nam, &Term::Var { nam: Name::new(format!("{bnd}-1")) });
-                  }
-                  (zero_term, bod)
-                }
-                _ => {
-                  self.error(ReadbackError::InvalidNumericMatch);
-                  (zero_term, succ_term)
-                }
-              }
-            } else {
-              // TODO: Is there any case where we expect a different node type here on readback?
-              self.error(ReadbackError::InvalidNumericMatch);
-              (Term::Err, Term::Err)
-            };
-            Term::Swt { arg: Box::new(arg), bnd: Some(bnd), with: vec![], pred: None, arms: vec![zero, succ] }
-          }
-          _ => {
-            self.error(ReadbackError::InvalidNumericMatch);
-            Term::Err
-          }
-        },
+        NodeKind::Era => Term::Era,
+        NodeKind::Ctr(CtrKind::Con(lab)) => self.read_con(next, *lab),
+        NodeKind::Swi => self.read_swi(next),
         NodeKind::Ref { def_name } => Term::Ref { nam: def_name.clone() },
-        // If we're visiting a fan node...
-        NodeKind::Ctr(kind @ (Dup(_) | Tup(_))) => {
-          let (fan, lab) = match *kind {
-            Tup(lab) => (FanKind::Tup, lab),
-            Dup(lab) => (FanKind::Dup, Some(lab)),
-            _ => unreachable!(),
-          };
-          match next.slot() {
-            // If we're visiting a port 0, then it is a pair.
-            0 => {
-              if fan == FanKind::Dup
-                && let Some(dup_paths) = &mut self.dup_paths
-                && let stack = dup_paths.entry(lab.unwrap()).or_default()
-                && let Some(slot) = stack.pop()
-              {
-                // Since we had a paired Dup in the path to this Sup,
-                // we "decay" the superposition according to the original direction we came from the Dup.
-                let term = self.read_term(self.net.enter_port(Port(node, slot)));
-                self.dup_paths.as_mut().unwrap().get_mut(&lab.unwrap()).unwrap().push(slot);
-                term
-              } else {
-                // If no Dup with same label in the path, we can't resolve the Sup, so keep it as a term.
-                self.decay_or_get_ports(node).map_or_else(
-                  |(fst, snd)| Term::Fan { fan, tag: self.labels[fan].to_tag(lab), els: vec![fst, snd] },
-                  |term| term,
-                )
-              }
-            }
-            // If we're visiting a port 1 or 2, then it is a variable.
-            // Also, that means we found a dup, so we store it to read later.
-            1 | 2 => {
-              if fan == FanKind::Dup
-                && let Some(dup_paths) = &mut self.dup_paths
-              {
-                dup_paths.entry(lab.unwrap()).or_default().push(next.slot());
-                let term = self.read_term(self.net.enter_port(Port(node, 0)));
-                self.dup_paths.as_mut().unwrap().entry(lab.unwrap()).or_default().pop().unwrap();
-                term
-              } else {
-                if self.seen_fans.insert(node) {
-                  self.scope.insert(node);
-                }
-                Term::Var { nam: self.namegen.var_name(next) }
-              }
-            }
-            _ => unreachable!(),
-          }
-        }
-        NodeKind::Num { val: _ } => {
-          let (flp, arg) = self.read_opr_arg(next);
-          match arg {
-            NumArg::Sym(opr) => Term::Oper {
-              opr: Op::from_native_tag(opr, NumType::U24),
-              fst: Box::new(Term::Err),
-              snd: Box::new(Term::Err),
-            },
-            NumArg::Num(typ, val) => Term::Num { val: Num::from_bits_and_type(val, typ) },
-            NumArg::Par(opr, val) => {
-              if flp {
-                Term::Oper {
-                  opr: Op::from_native_tag(opr, NumType::U24),
-                  fst: Box::new(Term::Num { val: Num::from_bits_and_type(val, NumType::U24) }),
-                  snd: Box::new(Term::Err),
-                }
-              } else {
-                Term::Oper {
-                  opr: Op::from_native_tag(opr, NumType::U24),
-                  fst: Box::new(Term::Err),
-                  snd: Box::new(Term::Num { val: Num::from_bits_and_type(val, NumType::U24) }),
-                }
-              }
-            }
-            NumArg::Oth(_) => unreachable!(),
-          }
-        }
-        NodeKind::Opr => match next.slot() {
-          2 => {
-            let port0_kind = self.net.node(self.net.enter_port(Port(node, 0)).node()).kind.clone();
-            if port0_kind == NodeKind::Opr {
-              // Second half of a numeric operation
-              let fst = self.read_term(self.net.enter_port(Port(node, 0)));
-              if let Term::Oper { opr, fst, snd: _ } = &fst {
-                let (flip, arg) = self.read_opr_arg(self.net.enter_port(Port(node, 1)));
-                let snd = Box::new(match arg {
-                  NumArg::Num(typ, val) => Term::Num { val: Num::from_bits_and_type(val, typ) },
-                  NumArg::Oth(term) => term,
-                  NumArg::Sym(_) | NumArg::Par(_, _) => {
-                    self.error(ReadbackError::InvalidNumericOp);
-                    Term::Err
-                  }
-                });
-                let (fst, snd) = if flip { (snd, fst.clone()) } else { (fst.clone(), snd) };
-                Term::Oper { opr: *opr, fst, snd }
-              } else {
-                self.error(ReadbackError::InvalidNumericOp);
-                Term::Err
-              }
-            } else {
-              // First half of a numeric operation
-              let (flip0, arg0) = self.read_opr_arg(self.net.enter_port(Port(node, 0)));
-              let (flip1, arg1) = self.read_opr_arg(self.net.enter_port(Port(node, 1)));
-              let (arg0, arg1) = if flip0 != flip1 { (arg1, arg0) } else { (arg0, arg1) };
-              match (arg0, arg1) {
-                (NumArg::Sym(opr), NumArg::Num(typ, val)) | (NumArg::Num(typ, val), NumArg::Sym(opr)) => {
-                  Term::Oper {
-                    opr: Op::from_native_tag(opr, typ),
-                    fst: Box::new(Term::Num { val: Num::from_bits_and_type(val, typ) }),
-                    snd: Box::new(Term::Err),
-                  }
-                }
-                (NumArg::Num(typ, num1), NumArg::Par(opr, num2))
-                | (NumArg::Par(opr, num1), NumArg::Num(typ, num2)) => Term::Oper {
-                  opr: Op::from_native_tag(opr, typ),
-                  fst: Box::new(Term::Num { val: Num::from_bits_and_type(num1, typ) }),
-                  snd: Box::new(Term::Num { val: Num::from_bits_and_type(num2, typ) }),
-                },
-                // No type, so assuming u24
-                (NumArg::Sym(opr), NumArg::Oth(term)) | (NumArg::Oth(term), NumArg::Sym(opr)) => Term::Oper {
-                  opr: Op::from_native_tag(opr, NumType::U24),
-                  fst: Box::new(term),
-                  snd: Box::new(Term::Err),
-                },
-
-                (NumArg::Par(opr, num), NumArg::Oth(term)) => Term::Oper {
-                  opr: Op::from_native_tag(opr, NumType::U24),
-                  fst: Box::new(Term::Num { val: Num::from_bits_and_type(num, NumType::U24) }),
-                  snd: Box::new(term),
-                },
-                (NumArg::Oth(term), NumArg::Par(opr, num)) => Term::Oper {
-                  opr: Op::from_native_tag(opr, NumType::U24),
-                  fst: Box::new(term),
-                  snd: Box::new(Term::Num { val: Num::from_bits_and_type(num, NumType::U24) }),
-                },
-                _ => {
-                  self.error(ReadbackError::InvalidNumericOp);
-                  Term::Err
-                }
-              }
-            }
-          }
-          _ => {
-            self.error(ReadbackError::InvalidNumericOp);
-            Term::Err
-          }
-        },
+        NodeKind::Ctr(kind @ (Dup(_) | Tup(_))) => self.read_fan(next, *kind),
+        NodeKind::Num { val } => num_from_bits_with_type(*val, *val),
+        NodeKind::Opr => self.read_opr(next),
         NodeKind::Rot => {
           self.error(ReadbackError::ReachedRoot);
           Term::Err
@@ -316,27 +103,380 @@ impl Reader<'_> {
     })
   }
 
-  fn read_opr_arg(&mut self, next: Port) -> (bool, NumArg) {
-    let node = next.node();
-    match &self.net.node(node).kind {
-      NodeKind::Num { val } => {
-        self.seen.insert(next);
-        let flipped = ((val >> 28) & 0x1) != 0;
-        let typ = val & 0xf;
-        let val = (val >> 4) & 0x00ff_ffff;
-        let arg = match typ {
-          // Sym
-          0x0 => NumArg::Sym(val & 0xf),
-          // Num
-          0x1 ..= 0x3 => NumArg::Num(NumType::from_native_tag(typ), val),
-          // Partial
-          opr => NumArg::Par(opr, val),
+  /// Reads a term from a CON node.
+  /// Could be a lambda, an application, a CON tuple or a CON tuple elimination.
+  fn read_con(&mut self, next: Port, label: Option<BendLab>) -> Term {
+    let node = next.node_id();
+    match next.slot() {
+      // If we're visiting a port 0, then it is a tuple or a lambda.
+      0 => {
+        if self.is_tup(node) {
+          // A tuple
+          let lft = self.read_term(self.net.enter_port(Port(node, 1)));
+          let rgt = self.read_term(self.net.enter_port(Port(node, 2)));
+          Term::Fan { fan: FanKind::Tup, tag: self.labels.con.to_tag(label), els: vec![lft, rgt] }
+        } else {
+          // A lambda
+          let nam = self.namegen.decl_name(self.net, Port(node, 1));
+          let bod = self.read_term(self.net.enter_port(Port(node, 2)));
+          Term::Lam {
+            tag: self.labels.con.to_tag(label),
+            pat: Box::new(Pattern::Var(nam)),
+            bod: Box::new(bod),
+          }
+        }
+      }
+      // If we're visiting a port 1, then it is a variable.
+      1 => Term::Var { nam: self.namegen.var_name(next) },
+      // If we're visiting a port 2, then it is an application.
+      2 => {
+        let fun = self.read_term(self.net.enter_port(Port(node, 0)));
+        let arg = self.read_term(self.net.enter_port(Port(node, 1)));
+        Term::App { tag: self.labels.con.to_tag(label), fun: Box::new(fun), arg: Box::new(arg) }
+      }
+      _ => unreachable!(),
+    }
+  }
+
+  /// Reads a fan term from a DUP node.
+  /// Could be a superposition, a duplication, a DUP tuple or a DUP tuple elimination.
+  fn read_fan(&mut self, next: Port, kind: CtrKind) -> Term {
+    let node = next.node_id();
+    let (fan, lab) = match kind {
+      CtrKind::Tup(lab) => (FanKind::Tup, lab),
+      CtrKind::Dup(lab) => (FanKind::Dup, Some(lab)),
+      _ => unreachable!(),
+    };
+    match next.slot() {
+      // If we're visiting a port 0, then it is a pair.
+      0 => {
+        // If this superposition is in a readback path with a paired Dup,
+        // we resolve it by splitting the two sup values into the two Dup variables.
+        // If we find that it's not paired with a Dup, we just keep the Sup as a term.
+        // The latter are all the early returns.
+
+        if fan != FanKind::Dup {
+          return self.decay_or_get_ports(node).unwrap_or_else(|(fst, snd)| Term::Fan {
+            fan,
+            tag: self.labels[fan].to_tag(lab),
+            els: vec![fst, snd],
+          });
+        }
+
+        let Some(dup_paths) = &mut self.dup_paths else {
+          return self.decay_or_get_ports(node).unwrap_or_else(|(fst, snd)| Term::Fan {
+            fan,
+            tag: self.labels[fan].to_tag(lab),
+            els: vec![fst, snd],
+          });
         };
-        (flipped, arg)
+
+        let stack = dup_paths.entry(lab.unwrap()).or_default();
+        let Some(slot) = stack.pop() else {
+          return self.decay_or_get_ports(node).unwrap_or_else(|(fst, snd)| Term::Fan {
+            fan,
+            tag: self.labels[fan].to_tag(lab),
+            els: vec![fst, snd],
+          });
+        };
+
+        // Found a paired Dup, so we "decay" the superposition according to the original direction we came from the Dup.
+        let term = self.read_term(self.net.enter_port(Port(node, slot)));
+        self.dup_paths.as_mut().unwrap().get_mut(&lab.unwrap()).unwrap().push(slot);
+        term
+      }
+      // If we're visiting a port 1 or 2, then it is a variable.
+      // Also, that means we found a dup, so we store it to read later.
+      1 | 2 => {
+        // If doing non-linear readback, we also store dup paths to try to resolve them later.
+        if let Some(dup_paths) = &mut self.dup_paths {
+          if fan == FanKind::Dup {
+            dup_paths.entry(lab.unwrap()).or_default().push(next.slot());
+            let term = self.read_term(self.net.enter_port(Port(node, 0)));
+            self.dup_paths.as_mut().unwrap().entry(lab.unwrap()).or_default().pop().unwrap();
+            return term;
+          }
+        }
+        // Otherwise, just store the new dup/let tup and return the variable.
+        if self.seen_fans.insert(node) {
+          self.scope.insert(node);
+        }
+        Term::Var { nam: self.namegen.var_name(next) }
+      }
+      _ => unreachable!(),
+    }
+  }
+
+  /// Reads an Opr term from an OPR node.
+  fn read_opr(&mut self, next: Port) -> Term {
+    /// Read one of the argument ports of an operation.
+    fn add_arg(
+      reader: &mut Reader,
+      port: Port,
+      args: &mut Vec<Result<hvm::hvm::Val, Term>>,
+      types: &mut Vec<hvm::hvm::Tag>,
+      ops: &mut Vec<hvm::hvm::Tag>,
+    ) {
+      if let NodeKind::Num { val } = reader.net.node(port.node_id()).kind {
+        match hvm::hvm::Numb::get_typ(&Numb(val)) {
+          // Contains an operation
+          hvm::hvm::TY_SYM => {
+            ops.push(hvm::hvm::Numb(val).get_sym());
+          }
+          // Contains a number with a type
+          typ @ hvm::hvm::TY_U24..=hvm::hvm::TY_F24 => {
+            types.push(typ);
+            args.push(Ok(val));
+          }
+          // Contains a partially applied number with operation and no type
+          op @ hvm::hvm::OP_ADD.. => {
+            ops.push(op);
+            args.push(Ok(val));
+          }
+        }
+      } else {
+        // Some other non-number argument
+        let term = reader.read_term(port);
+        args.push(Err(term));
+      }
+    }
+
+    /// Creates an Opr term from the arguments of the subnet of an OPR node.
+    fn opr_term_from_hvm_args(
+      args: &mut Vec<Result<hvm::hvm::Val, Term>>,
+      types: &mut Vec<hvm::hvm::Tag>,
+      ops: &mut Vec<hvm::hvm::Tag>,
+      is_flipped: bool,
+    ) -> Term {
+      let typ = match types.as_slice() {
+        [typ] => *typ,
+        // Use U24 as default number type
+        [] => hvm::hvm::TY_U24,
+        _ => {
+          // Too many types
+          return Term::Err;
+        }
+      };
+      match (args.as_slice(), ops.as_slice()) {
+        ([arg1, arg2], [op]) => {
+          // Correct number of arguments
+          let arg1 = match arg1 {
+            Ok(val) => num_from_bits_with_type(*val, typ as u32),
+            Err(val) => val.clone(),
+          };
+          let arg2 = match arg2 {
+            Ok(val) => num_from_bits_with_type(*val, typ as u32),
+            Err(val) => val.clone(),
+          };
+          let (arg1, arg2) = if is_flipped ^ op_is_flipped(*op) { (arg2, arg1) } else { (arg1, arg2) };
+          let Some(op) = op_from_native_tag(*op, typ) else {
+            // Invalid operator
+            return Term::Err;
+          };
+          Term::Oper { opr: op, fst: Box::new(arg1), snd: Box::new(arg2) }
+        }
+        _ => {
+          // Invalid number of arguments/types/operators
+          Term::Err
+        }
+      }
+    }
+
+    fn op_is_flipped(op: hvm::hvm::Tag) -> bool {
+      [hvm::hvm::FP_DIV, hvm::hvm::FP_REM, hvm::hvm::FP_SHL, hvm::hvm::FP_SHR, hvm::hvm::FP_SUB].contains(&op)
+    }
+
+    fn op_from_native_tag(val: hvm::hvm::Tag, typ: hvm::hvm::Tag) -> Option<Op> {
+      let op = match val {
+        hvm::hvm::OP_ADD => Op::ADD,
+        hvm::hvm::OP_SUB => Op::SUB,
+        hvm::hvm::FP_SUB => Op::SUB,
+        hvm::hvm::OP_MUL => Op::MUL,
+        hvm::hvm::OP_DIV => Op::DIV,
+        hvm::hvm::FP_DIV => Op::DIV,
+        hvm::hvm::OP_REM => Op::REM,
+        hvm::hvm::FP_REM => Op::REM,
+        hvm::hvm::OP_EQ => Op::EQ,
+        hvm::hvm::OP_NEQ => Op::NEQ,
+        hvm::hvm::OP_LT => Op::LT,
+        hvm::hvm::OP_GT => Op::GT,
+        hvm::hvm::OP_AND => {
+          if typ == hvm::hvm::TY_F24 {
+            todo!("Implement readback of atan2")
+          } else {
+            Op::AND
+          }
+        }
+        hvm::hvm::OP_OR => {
+          if typ == hvm::hvm::TY_F24 {
+            todo!("Implement readback of log")
+          } else {
+            Op::OR
+          }
+        }
+        hvm::hvm::OP_XOR => {
+          if typ == hvm::hvm::TY_F24 {
+            Op::POW
+          } else {
+            Op::XOR
+          }
+        }
+        hvm::hvm::OP_SHL => Op::SHL,
+        hvm::hvm::FP_SHL => Op::SHL,
+        hvm::hvm::OP_SHR => Op::SHR,
+        hvm::hvm::FP_SHR => Op::SHR,
+        _ => return None,
+      };
+      Some(op)
+    }
+
+    let node = next.node_id();
+    match next.slot() {
+      2 => {
+        // If port1 has a partially applied number, the operation has 1 node.
+        // Port0 has arg1 and port1 has arg2.
+        // The operation is interpreted as being pre-flipped (if its a FP_, they cancel and don't flip).
+        let port1_kind = self.net.node(self.net.enter_port(Port(node, 1)).node_id()).kind.clone();
+        if let NodeKind::Num { val } = port1_kind {
+          match hvm::hvm::Numb::get_typ(&Numb(val)) {
+            hvm::hvm::OP_ADD.. => {
+              let x1_port = self.net.enter_port(Port(node, 0));
+              let x2_port = self.net.enter_port(Port(node, 1));
+              let mut args = vec![];
+              let mut types = vec![];
+              let mut ops = vec![];
+              add_arg(self, x1_port, &mut args, &mut types, &mut ops);
+              add_arg(self, x2_port, &mut args, &mut types, &mut ops);
+              let term = opr_term_from_hvm_args(&mut args, &mut types, &mut ops, true);
+              if let Term::Err = term {
+                // Since that function doesn't have access to the reader, add the error here.
+                self.error(ReadbackError::InvalidNumericOp);
+              }
+              return term;
+            }
+            _ => {
+              // Not a partially applied number, handle it in the next case
+            }
+          }
+        }
+
+        // If port0 has a partially applied number, it also has 1 node.
+        // The operation is interpreted as not pre-flipped.
+        let port0_kind = self.net.node(self.net.enter_port(Port(node, 0)).node_id()).kind.clone();
+        if let NodeKind::Num { val } = port0_kind {
+          match hvm::hvm::Numb::get_typ(&Numb(val)) {
+            hvm::hvm::OP_ADD.. => {
+              let x1_port = self.net.enter_port(Port(node, 0));
+              let x2_port = self.net.enter_port(Port(node, 1));
+              let mut args = vec![];
+              let mut types = vec![];
+              let mut ops = vec![];
+              add_arg(self, x1_port, &mut args, &mut types, &mut ops);
+              add_arg(self, x2_port, &mut args, &mut types, &mut ops);
+              let term = opr_term_from_hvm_args(&mut args, &mut types, &mut ops, false);
+              if let Term::Err = term {
+                // Since that function doesn't have access to the reader, add the error here.
+                self.error(ReadbackError::InvalidNumericOp);
+              }
+              return term;
+            }
+            _ => {
+              // Not a partially applied number, handle it in the next case
+            }
+          }
+        }
+
+        // Otherwise, the operation has 2 nodes.
+        // Read the top node port0 and 1, bottom node port1.
+        // Args are in that order, skipping the operation.
+        let bottom_id = node;
+        let top_id = self.net.enter_port(Port(bottom_id, 0)).node_id();
+        if let NodeKind::Opr = self.net.node(top_id).kind {
+          let x1_port = self.net.enter_port(Port(top_id, 0));
+          let x2_port = self.net.enter_port(Port(top_id, 1));
+          let x3_port = self.net.enter_port(Port(bottom_id, 1));
+          let mut args = vec![];
+          let mut types = vec![];
+          let mut ops = vec![];
+          add_arg(self, x1_port, &mut args, &mut types, &mut ops);
+          add_arg(self, x2_port, &mut args, &mut types, &mut ops);
+          add_arg(self, x3_port, &mut args, &mut types, &mut ops);
+          let term = opr_term_from_hvm_args(&mut args, &mut types, &mut ops, false);
+          if let Term::Err = term {
+            self.error(ReadbackError::InvalidNumericOp);
+          }
+          term
+        } else {
+          // Port 0 was not an OPR node, invalid.
+          self.error(ReadbackError::InvalidNumericOp);
+          Term::Err
+        }
       }
       _ => {
-        let term = self.read_term(next);
-        (false, NumArg::Oth(term))
+        // Entered from a port other than 2, invalid.
+        self.error(ReadbackError::InvalidNumericOp);
+        Term::Err
+      }
+    }
+  }
+
+  /// Reads a switch term from a SWI node.
+  fn read_swi(&mut self, next: Port) -> Term {
+    let node = next.node_id();
+    match next.slot() {
+      2 => {
+        // Read the matched expression
+        let arg = self.read_term(self.net.enter_port(Port(node, 0)));
+        let bnd = if let Term::Var { nam } = &arg { nam.clone() } else { self.namegen.unique() };
+
+        // Read the pattern matching node
+        let sel_node = self.net.enter_port(Port(node, 1)).node_id();
+
+        // We expect the pattern matching node to be a CON
+        let sel_kind = &self.net.node(sel_node).kind;
+        if sel_kind != &NodeKind::Ctr(CtrKind::Con(None)) {
+          // TODO: Is there any case where we expect a different node type here on readback?
+          self.error(ReadbackError::InvalidNumericMatch);
+          return Term::Err;
+        }
+
+        let zero = self.read_term(self.net.enter_port(Port(sel_node, 1)));
+        let mut succ = self.read_term(self.net.enter_port(Port(sel_node, 2)));
+        // Call expand_generated in case of succ_term be a lifted term
+        succ.expand_generated(self.book, self.recursive_defs);
+
+        // Succ term should be a lambda
+        let succ = match &mut succ {
+          Term::Lam { pat, bod, .. } => {
+            if let Pattern::Var(nam) = pat.as_ref() {
+              let mut bod = std::mem::take(bod.as_mut());
+              if let Some(nam) = nam {
+                bod.subst(nam, &Term::Var { nam: Name::new(format!("{bnd}-1")) });
+              }
+              bod
+            } else {
+              // Readback should never generate non-var patterns for lambdas.
+              self.error(ReadbackError::InvalidNumericMatch);
+              succ
+            }
+          }
+          _ => {
+            self.error(ReadbackError::InvalidNumericMatch);
+            succ
+          }
+        };
+        Term::Swt {
+          arg: Box::new(arg),
+          bnd: Some(bnd),
+          with_arg: vec![],
+          with_bnd: vec![],
+          pred: None,
+          arms: vec![zero, succ],
+        }
+      }
+      _ => {
+        self.error(ReadbackError::InvalidNumericMatch);
+        Term::Err
       }
     }
   }
@@ -410,19 +550,24 @@ impl Reader<'_> {
     for (err, count) in err_counts {
       let count_msg = if count > 1 { format!(" ({count} occurrences)") } else { "".to_string() };
       let msg = format!("{}{}", err, count_msg);
-      diagnostics.add_diagnostic(msg.as_str(), Severity::Warning, DiagnosticOrigin::Readback);
+      diagnostics.add_diagnostic(
+        msg.as_str(),
+        Severity::Warning,
+        DiagnosticOrigin::Readback,
+        Default::default(),
+      );
     }
   }
 
   /// Returns whether the given port represents a tuple or some other
   /// term (usually a lambda).
   ///
-  /// Used heuristic: a con node is a tuple if port 1 is a closed net and not an ERA.
+  /// Used heuristic: a con node is a tuple if port 1 is a closed tree and not an ERA.
   fn is_tup(&self, node: NodeId) -> bool {
     if !matches!(self.net.node(node).kind, NodeKind::Ctr(CtrKind::Con(_))) {
       return false;
     }
-    if self.net.node(self.net.enter_port(Port(node, 1)).node()).kind == NodeKind::Era {
+    if self.net.node(self.net.enter_port(Port(node, 1)).node_id()).kind == NodeKind::Era {
       return false;
     }
     let mut wires = HashSet::new();
@@ -430,7 +575,7 @@ impl Reader<'_> {
     while let Some(port) = to_check.pop() {
       match port.slot() {
         0 => {
-          let node = port.node();
+          let node = port.node_id();
           let lft = self.net.enter_port(Port(node, 1));
           let rgt = self.net.enter_port(Port(node, 2));
           to_check.push(lft);
@@ -451,73 +596,17 @@ impl Reader<'_> {
   }
 }
 
-/// Argument for a Opr node
-enum NumArg {
-  Sym(u32),
-  Num(NumType, u32),
-  Par(u32, u32),
-  Oth(Term),
-}
+/* Utils for numbers and numeric operations */
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NumType {
-  U24 = 1,
-  I24 = 2,
-  F24 = 3,
-}
-
-impl Op {
-  fn from_native_tag(val: u32, typ: NumType) -> Op {
-    match val {
-      0x4 => Op::ADD,
-      0x5 => Op::SUB,
-      0x6 => Op::MUL,
-      0x7 => Op::DIV,
-      0x8 => Op::REM,
-      0x9 => Op::EQL,
-      0xa => Op::NEQ,
-      0xb => Op::LTN,
-      0xc => Op::GTN,
-      0xd => {
-        if typ == NumType::F24 {
-          Op::ATN
-        } else {
-          Op::AND
-        }
-      }
-      0xe => {
-        if typ == NumType::F24 {
-          Op::LOG
-        } else {
-          Op::OR
-        }
-      }
-      0xf => {
-        if typ == NumType::F24 {
-          Op::POW
-        } else {
-          Op::XOR
-        }
-      }
-      _ => unreachable!(),
-    }
-  }
-}
-
-impl NumType {
-  fn from_native_tag(value: u32) -> Self {
-    match value {
-      x if x == NumType::U24 as u32 => NumType::U24,
-      x if x == NumType::I24 as u32 => NumType::I24,
-      x if x == NumType::F24 as u32 => NumType::F24,
-      _ => unreachable!(),
-    }
-  }
-}
-
-impl Num {
-  fn from_bits_and_type(bits: u32, typ: NumType) -> Self {
-    Num::from_bits((bits & 0x00ff_ffff) << 4 | (typ as u32))
+/// From an hvm number carrying the value and another carrying the type, return a Num term.
+fn num_from_bits_with_type(val: u32, typ: u32) -> Term {
+  match hvm::hvm::Numb::get_typ(&Numb(typ)) {
+    // No type information, assume u24 by default
+    hvm::hvm::TY_SYM => Term::Num { val: Num::U24(Numb::get_u24(&Numb(val))) },
+    hvm::hvm::TY_U24 => Term::Num { val: Num::U24(Numb::get_u24(&Numb(val))) },
+    hvm::hvm::TY_I24 => Term::Num { val: Num::I24(Numb::get_i24(&Numb(val))) },
+    hvm::hvm::TY_F24 => Term::Num { val: Num::F24(Numb::get_f24(&Numb(val))) },
+    _ => Term::Err,
   }
 }
 
@@ -603,7 +692,7 @@ impl NameGen {
   fn decl_name(&mut self, net: &INet, var_port: Port) -> Option<Name> {
     // If port is linked to an erase node, return an unused variable
     let var_use = net.enter_port(var_port);
-    let var_kind = &net.node(var_use.node()).kind;
+    let var_kind = &net.node(var_use.node_id()).kind;
     (*var_kind != NodeKind::Era).then(|| self.var_name(var_port))
   }
 
@@ -659,8 +748,11 @@ impl Term {
   pub fn collect_unscoped(&self, unscoped: &mut HashSet<Name>, scope: &mut Vec<Name>) {
     maybe_grow(|| match self {
       Term::Var { nam } if !scope.contains(nam) => _ = unscoped.insert(nam.clone()),
-      Term::Swt { arg, bnd, with: _, pred: _, arms } => {
+      Term::Swt { arg, bnd, with_bnd: _, with_arg, pred: _, arms } => {
         arg.collect_unscoped(unscoped, scope);
+        for arg in with_arg {
+          arg.collect_unscoped(unscoped, scope);
+        }
         arms[0].collect_unscoped(unscoped, scope);
         if let Some(bnd) = bnd {
           scope.push(Name::new(format!("{bnd}-1")));
@@ -685,12 +777,13 @@ impl Term {
     })
   }
 
+  /// Transform the variables that we previously found were unscoped into their unscoped variants.
   pub fn apply_unscoped(&mut self, unscoped: &HashSet<Name>) {
     maybe_grow(|| {
-      if let Term::Var { nam } = self
-        && unscoped.contains(nam)
-      {
-        *self = Term::Link { nam: std::mem::take(nam) }
+      if let Term::Var { nam } = self {
+        if unscoped.contains(nam) {
+          *self = Term::Link { nam: std::mem::take(nam) }
+        }
       }
       if let Some(pat) = self.pattern_mut() {
         pat.apply_unscoped(unscoped);
@@ -705,11 +798,11 @@ impl Term {
 impl Pattern {
   fn apply_unscoped(&mut self, unscoped: &HashSet<Name>) {
     maybe_grow(|| {
-      if let Pattern::Var(Some(nam)) = self
-        && unscoped.contains(nam)
-      {
-        let nam = std::mem::take(nam);
-        *self = Pattern::Chn(nam);
+      if let Pattern::Var(Some(nam)) = self {
+        if unscoped.contains(nam) {
+          let nam = std::mem::take(nam);
+          *self = Pattern::Chn(nam);
+        }
       }
       for child in self.children_mut() {
         child.apply_unscoped(unscoped)

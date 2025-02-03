@@ -1,9 +1,9 @@
 use crate::{
   diagnostics::Diagnostics,
-  fun::{Ctx, Name, Pattern, Term},
+  fun::{transform::desugar_bend, Ctx, Name, Pattern, Term},
   maybe_grow,
 };
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum UnboundVarErr {
@@ -14,21 +14,16 @@ pub enum UnboundVarErr {
 impl Ctx<'_> {
   /// Checks that there are no unbound variables in all definitions.
   pub fn check_unbound_vars(&mut self) -> Result<(), Diagnostics> {
-    self.info.start_pass();
-
     for (def_name, def) in self.book.defs.iter_mut() {
       let mut errs = Vec::new();
       for rule in &mut def.rules {
-        let mut scope = HashMap::new();
-        for pat in &rule.pats {
-          pat.binds().for_each(|nam| push_scope(nam.as_ref(), &mut scope));
-        }
-
+        // Note: Using a Vec instead of a Map is a deliberate optimization.
+        let mut scope = rule.pats.iter().flat_map(|pat| pat.binds()).map(|x| x.as_ref()).collect::<Vec<_>>();
         rule.body.check_unbound_vars(&mut scope, &mut errs);
       }
 
       for err in errs {
-        self.info.add_rule_error(err, def_name.clone());
+        self.info.add_function_error(err, def_name.clone(), def.source.clone());
       }
     }
 
@@ -39,10 +34,9 @@ impl Ctx<'_> {
 impl Term {
   /// Checks that all variables are bound.
   /// Precondition: References have been resolved, implicit binds have been solved.
-
   pub fn check_unbound_vars<'a>(
     &'a mut self,
-    scope: &mut HashMap<&'a Name, u64>,
+    scope: &mut Vec<Option<&'a Name>>,
     errs: &mut Vec<UnboundVarErr>,
   ) {
     let mut globals = HashMap::new();
@@ -59,13 +53,13 @@ impl Term {
 /// Globals has how many times a global var name was declared and used.
 pub fn check_uses<'a>(
   term: &'a mut Term,
-  scope: &mut HashMap<&'a Name, u64>,
+  scope: &mut Vec<Option<&'a Name>>,
   globals: &mut HashMap<Name, (usize, usize)>,
   errs: &mut Vec<UnboundVarErr>,
 ) {
   maybe_grow(move || match term {
     Term::Var { nam } => {
-      if !scope.contains_key(nam) {
+      if !scope_contains(nam, scope) {
         errs.push(UnboundVarErr::Local(nam.clone()));
         *term = Term::Err;
       }
@@ -80,11 +74,11 @@ pub fn check_uses<'a>(
       }
       for (child, binds) in term.children_mut_with_binds() {
         for bind in binds.clone() {
-          push_scope(bind.as_ref(), scope);
+          scope.push(bind.as_ref());
         }
         check_uses(child, scope, globals, errs);
-        for bind in binds.rev() {
-          pop_scope(bind.as_ref(), scope);
+        for _ in binds {
+          scope.pop();
         }
       }
     }
@@ -104,26 +98,30 @@ pub fn check_global_binds(pat: &Pattern, globals: &mut HashMap<Name, (usize, usi
   }
 }
 
-fn push_scope<'a>(nam: Option<&'a Name>, scope: &mut HashMap<&'a Name, u64>) {
-  if let Some(nam) = nam {
-    *scope.entry(nam).or_default() += 1;
-  }
-}
-
-fn pop_scope<'a>(nam: Option<&'a Name>, scope: &mut HashMap<&'a Name, u64>) {
-  if let Some(nam) = nam {
-    let Entry::Occupied(n_declarations) = scope.entry(nam).and_modify(|e| *e -= 1) else { unreachable!() };
-
-    if *n_declarations.get() == 0 {
-      n_declarations.remove();
-    }
-  }
+fn scope_contains(nam: &Name, scope: &[Option<&Name>]) -> bool {
+  scope.iter().rev().any(|scope_nam| scope_nam == nam)
 }
 
 impl std::fmt::Display for UnboundVarErr {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      UnboundVarErr::Local(var) => write!(f, "Unbound variable '{var}'."),
+      UnboundVarErr::Local(var) => {
+        if var == desugar_bend::RECURSIVE_KW {
+          write!(
+            f,
+            "Unbound variable '{}'.\n    Note: '{}' is only a keyword inside the 'when' arm of a 'bend'.",
+            var,
+            desugar_bend::RECURSIVE_KW
+          )
+        } else if let Some((pre, suf)) = var.rsplit_once('-') {
+          write!(
+            f,
+            "Unbound variable '{var}'. If you wanted to subtract '{pre}' from '{suf}', you must separate it with spaces ('{pre} - {suf}') since '-' is a valid name character."
+          )
+        } else {
+          write!(f, "Unbound variable '{var}'.")
+        }
+      }
       UnboundVarErr::Global { var, declared, used } => match (declared, used) {
         (0, _) => write!(f, "Unbound unscoped variable '${var}'."),
         (_, 0) => write!(f, "Unscoped variable from lambda 'λ${var}' is never used."),

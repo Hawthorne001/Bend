@@ -1,6 +1,6 @@
 use crate::{
   diagnostics::Diagnostics,
-  fun::{Adts, Constructors, Ctx, Pattern},
+  fun::{Adts, Constructors, Ctx, Pattern, Rule, Term},
 };
 
 impl Ctx<'_> {
@@ -8,33 +8,58 @@ impl Ctx<'_> {
   ///
   /// Does not check exhaustiveness of rules and type mismatches. (Inter-ctr/type proprieties)
   pub fn fix_match_defs(&mut self) -> Result<(), Diagnostics> {
-    self.info.start_pass();
-
     for def in self.book.defs.values_mut() {
       let mut errs = vec![];
 
       let def_arity = def.arity();
       for rule in &mut def.rules {
-        if rule.arity() != def_arity {
-          errs.push(format!(
-            "Incorrect pattern matching rule arity. Expected {} args, found {}.",
-            def_arity,
-            rule.arity()
-          ));
-        }
-
-        for pat in &mut rule.pats {
-          pat.resolve_pat(&self.book.ctrs);
-          pat.check_good_ctr(&self.book.ctrs, &self.book.adts, &mut errs);
-        }
+        rule.fix_match_defs(def_arity, &self.book.ctrs, &self.book.adts, &mut errs);
       }
 
       for err in errs {
-        self.info.add_rule_error(err, def.name.clone());
+        self.info.add_function_error(err, def.name.clone(), def.source.clone());
       }
     }
 
     self.info.fatal(())
+  }
+}
+
+impl Rule {
+  fn fix_match_defs(&mut self, def_arity: usize, ctrs: &Constructors, adts: &Adts, errs: &mut Vec<String>) {
+    if self.arity() != def_arity {
+      errs.push(format!(
+        "Incorrect pattern matching rule arity. Expected {} args, found {}.",
+        def_arity,
+        self.arity()
+      ));
+    }
+
+    for pat in &mut self.pats {
+      pat.resolve_pat(ctrs);
+      pat.check_good_ctr(ctrs, adts, errs);
+    }
+
+    self.body.fix_match_defs(ctrs, adts, errs);
+  }
+}
+
+impl Term {
+  fn fix_match_defs(&mut self, ctrs: &Constructors, adts: &Adts, errs: &mut Vec<String>) {
+    match self {
+      Term::Def { def, nxt } => {
+        let def_arity = def.arity();
+        for rule in &mut def.rules {
+          rule.fix_match_defs(def_arity, ctrs, adts, errs);
+        }
+        nxt.fix_match_defs(ctrs, adts, errs);
+      }
+      _ => {
+        for children in self.children_mut() {
+          children.fix_match_defs(ctrs, adts, errs);
+        }
+      }
+    }
   }
 }
 
@@ -55,7 +80,7 @@ impl Pattern {
   fn check_good_ctr(&self, ctrs: &Constructors, adts: &Adts, errs: &mut Vec<String>) {
     if let Pattern::Ctr(nam, args) = self {
       if let Some(adt) = ctrs.get(nam) {
-        let expected_arity = adts[adt].ctrs[nam].len();
+        let expected_arity = adts[adt].ctrs[nam].fields.len();
         let found_arity = args.len();
         if expected_arity != found_arity {
           errs.push(format!(

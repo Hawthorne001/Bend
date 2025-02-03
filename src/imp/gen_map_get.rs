@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::fun::Name;
 
 use super::{AssignPattern, Definition, Expr, Stmt};
@@ -17,7 +15,28 @@ impl Definition {
 impl Stmt {
   fn gen_map_get(&mut self, id: &mut usize) {
     match self {
-      Stmt::Assign { pat: _, val, nxt } => {
+      Stmt::LocalDef { def, nxt } => {
+        nxt.gen_map_get(id);
+        def.gen_map_get()
+      }
+      Stmt::Assign { pat, val, nxt } => {
+        let key_substitutions =
+          if let AssignPattern::MapSet(_, key) = pat { key.substitute_map_gets(id) } else { Vec::new() };
+
+        if let Some(nxt) = nxt {
+          nxt.gen_map_get(id);
+        }
+
+        let substitutions = val.substitute_map_gets(id);
+        if !substitutions.is_empty() {
+          *self = gen_get(self, substitutions);
+        }
+
+        if !key_substitutions.is_empty() {
+          *self = gen_get(self, key_substitutions);
+        }
+      }
+      Stmt::Ask { pat: _, val, nxt } => {
         if let Some(nxt) = nxt {
           nxt.gen_map_get(id);
         }
@@ -26,18 +45,22 @@ impl Stmt {
           *self = gen_get(self, substitutions);
         }
       }
-      Stmt::Ask { pat: _, val, nxt } => {
+      Stmt::InPlace { op: _, pat, val, nxt } => {
+        let key_substitutions = if let AssignPattern::MapSet(_, key) = &mut **pat {
+          key.substitute_map_gets(id)
+        } else {
+          Vec::new()
+        };
+
         nxt.gen_map_get(id);
+
         let substitutions = val.substitute_map_gets(id);
         if !substitutions.is_empty() {
           *self = gen_get(self, substitutions);
         }
-      }
-      Stmt::InPlace { op: _, var: _, val, nxt } => {
-        nxt.gen_map_get(id);
-        let substitutions = val.substitute_map_gets(id);
-        if !substitutions.is_empty() {
-          *self = gen_get(self, substitutions);
+
+        if !key_substitutions.is_empty() {
+          *self = gen_get(self, key_substitutions);
         }
       }
       Stmt::If { cond, then, otherwise, nxt } => {
@@ -51,31 +74,38 @@ impl Stmt {
           *self = gen_get(self, substitutions);
         }
       }
-      Stmt::Match { bind: _, arg, arms, nxt } | Stmt::Fold { bind: _, arg, arms, with: _, nxt } => {
+      Stmt::Match { bnd: _, arg, with_bnd: _, with_arg, arms, nxt }
+      | Stmt::Fold { bnd: _, arg, arms, with_bnd: _, with_arg, nxt } => {
         for arm in arms.iter_mut() {
           arm.rgt.gen_map_get(id);
         }
         if let Some(nxt) = nxt {
           nxt.gen_map_get(id);
         }
-        let substitutions = arg.substitute_map_gets(id);
+        let mut substitutions = arg.substitute_map_gets(id);
+        for arg in with_arg {
+          substitutions.extend(arg.substitute_map_gets(id));
+        }
         if !substitutions.is_empty() {
           *self = gen_get(self, substitutions);
         }
       }
-      Stmt::Switch { bind: _, arg, arms, nxt } => {
+      Stmt::Switch { bnd: _, arg, with_bnd: _, with_arg, arms, nxt } => {
         for arm in arms.iter_mut() {
           arm.gen_map_get(id);
         }
         if let Some(nxt) = nxt {
           nxt.gen_map_get(id);
         }
-        let substitutions = arg.substitute_map_gets(id);
+        let mut substitutions = arg.substitute_map_gets(id);
+        for arg in with_arg {
+          substitutions.extend(arg.substitute_map_gets(id));
+        }
         if !substitutions.is_empty() {
           *self = gen_get(self, substitutions);
         }
       }
-      Stmt::Bend { bind: _, init, cond, step, base, nxt } => {
+      Stmt::Bend { bnd: _, arg: init, cond, step, base, nxt } => {
         step.gen_map_get(id);
         base.gen_map_get(id);
         if let Some(nxt) = nxt {
@@ -89,7 +119,7 @@ impl Stmt {
           *self = gen_get(self, substitutions);
         }
       }
-      Stmt::Do { typ: _, bod, nxt } => {
+      Stmt::With { typ: _, bod, nxt } => {
         bod.gen_map_get(id);
         if let Some(nxt) = nxt {
           nxt.gen_map_get(id);
@@ -116,15 +146,16 @@ impl Stmt {
   }
 }
 
-type Substitutions = HashMap<Name, (Name, Box<Expr>)>;
+type Substitutions = Vec<(Name, Name, Box<Expr>)>;
 
 impl Expr {
   fn substitute_map_gets(&mut self, id: &mut usize) -> Substitutions {
     fn go(e: &mut Expr, substitutions: &mut Substitutions, id: &mut usize) {
       match e {
         Expr::MapGet { nam, key } => {
+          go(key, substitutions, id);
           let new_var = gen_map_var(id);
-          substitutions.insert(new_var.clone(), (nam.clone(), key.clone()));
+          substitutions.push((new_var.clone(), nam.clone(), key.clone()));
           *e = Expr::Var { nam: new_var };
         }
         Expr::Call { fun, args, kwargs } => {
@@ -139,7 +170,7 @@ impl Expr {
         Expr::Lam { bod, .. } => {
           go(bod, substitutions, id);
         }
-        Expr::Bin { lhs, rhs, .. } => {
+        Expr::Opr { lhs, rhs, .. } => {
           go(lhs, substitutions, id);
           go(rhs, substitutions, id);
         }
@@ -148,24 +179,31 @@ impl Expr {
             go(el, substitutions, id);
           }
         }
-        Expr::Constructor { kwargs, .. } => {
+        Expr::Ctr { kwargs, .. } => {
           for (_, arg) in kwargs.iter_mut() {
             go(arg, substitutions, id);
           }
         }
-        Expr::Comprehension { term, iter, cond, .. } => {
+        Expr::LstMap { term, iter, cond, .. } => {
           go(term, substitutions, id);
           go(iter, substitutions, id);
           if let Some(cond) = cond {
             go(cond, substitutions, id);
           }
         }
-        Expr::MapInit { entries } => {
+        Expr::Map { entries } => {
           for (_, entry) in entries {
             go(entry, substitutions, id);
           }
         }
-        Expr::Eraser | Expr::Str { .. } | Expr::Var { .. } | Expr::Chn { .. } | Expr::Num { .. } => {}
+        Expr::TreeNode { left, right } => {
+          go(left, substitutions, id);
+          go(right, substitutions, id);
+        }
+        Expr::TreeLeaf { val } => {
+          go(val, substitutions, id);
+        }
+        Expr::Era | Expr::Str { .. } | Expr::Var { .. } | Expr::Chn { .. } | Expr::Num { .. } => {}
       }
     }
     let mut substitutions = Substitutions::new();
@@ -175,8 +213,8 @@ impl Expr {
 }
 
 fn gen_get(current: &mut Stmt, substitutions: Substitutions) -> Stmt {
-  substitutions.into_iter().fold(std::mem::take(current), |acc, next| {
-    let (var, (map_var, key)) = next;
+  substitutions.into_iter().rfold(std::mem::take(current), |acc, next| {
+    let (var, map_var, key) = next;
     let map_get_call = Expr::Var { nam: Name::new("Map/get") };
     let map_get_call = Expr::Call {
       fun: Box::new(map_get_call),

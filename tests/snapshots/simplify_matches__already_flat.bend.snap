@@ -2,32 +2,80 @@
 source: tests/golden_tests.rs
 input_file: tests/golden_tests/simplify_matches/already_flat.bend
 ---
+unchecked Rule1: Any
 (Rule1) = λa a
 
+unchecked Rule2: Any
 (Rule2) = λa λb b
 
+unchecked Rule3: Any
 (Rule3) = λa λb λc λd (a b c d)
 
+unchecked Rule4: Any
 (Rule4) = λa match a { Foo/CtrA: λb b; Foo/CtrB c: c; }
 
-(Rule5) = λa match a { Bar/CtrA1 b: λc (b c); Bar/CtrA2 d e: λf (d e f); Bar/CtrA3 g: λh (match h { Baz/CtrB0: λi (Bar/CtrA3 i); Baz/CtrB1 j: λk (Bar/CtrA3 k j); Baz/CtrB2 l: λm (Bar/CtrA3 m (Baz/CtrB2 l)); Baz/CtrB3 n: λo (o n); } g); }
+unchecked Rule5: Any
+(Rule5) = λa match a { Bar/CtrA1 b: λc let d = c; (b d); Bar/CtrA2 e f: λg let h = g; (e f h); Bar/CtrA3 i: λj let k = j; (match k { Baz/CtrB0: λl (Bar/CtrA3 l); Baz/CtrB1 m: λn (Bar/CtrA3 n m); Baz/CtrB2 o: λp (Bar/CtrA3 p (Baz/CtrB2 o)); Baz/CtrB3 q: λr (r q); } i); }
 
+unchecked Rule6: Any
 (Rule6) = λa a
 
-(Foo/CtrA) = λa λb a
+Foo/CtrA/tag: _
+(Foo/CtrA/tag) = 0
 
-(Foo/CtrB) = λa λb λc (c a)
+Foo/CtrA: Foo
+(Foo/CtrA) = λa (a Foo/CtrA/tag)
 
-(Bar/CtrA1) = λa λb λc λd (b a)
+Foo/CtrB/tag: _
+(Foo/CtrB/tag) = 1
 
-(Bar/CtrA2) = λa λb λc λd λe (d a b)
+Foo/CtrB: (Any -> Foo)
+(Foo/CtrB) = λa λb (b Foo/CtrB/tag a)
 
-(Bar/CtrA3) = λa λb λc λd (d a)
+Bar/CtrA1/tag: _
+(Bar/CtrA1/tag) = 0
 
-(Baz/CtrB0) = λa λb λc λd a
+Bar/CtrA1: (Any -> Bar)
+(Bar/CtrA1) = λa λb (b Bar/CtrA1/tag a)
 
-(Baz/CtrB1) = λa λb λc λd λe (c a)
+Bar/CtrA2/tag: _
+(Bar/CtrA2/tag) = 1
 
-(Baz/CtrB2) = λa λb λc λd λe (d a)
+Bar/CtrA2: (Any -> Any -> Bar)
+(Bar/CtrA2) = λa λb λc (c Bar/CtrA2/tag a b)
 
-(Baz/CtrB3) = λa λb λc λd λe (e a)
+Bar/CtrA3/tag: _
+(Bar/CtrA3/tag) = 2
+
+Bar/CtrA3: (Any -> Bar)
+(Bar/CtrA3) = λa λb (b Bar/CtrA3/tag a)
+
+Baz/CtrB0/tag: _
+(Baz/CtrB0/tag) = 0
+
+Baz/CtrB0: Baz
+(Baz/CtrB0) = λa (a Baz/CtrB0/tag)
+
+Baz/CtrB1/tag: _
+(Baz/CtrB1/tag) = 1
+
+Baz/CtrB1: (Any -> Baz)
+(Baz/CtrB1) = λa λb (b Baz/CtrB1/tag a)
+
+Baz/CtrB2/tag: _
+(Baz/CtrB2/tag) = 2
+
+Baz/CtrB2: (Any -> Baz)
+(Baz/CtrB2) = λa λb (b Baz/CtrB2/tag a)
+
+Baz/CtrB3/tag: _
+(Baz/CtrB3/tag) = 3
+
+Baz/CtrB3: (Any -> Baz)
+(Baz/CtrB3) = λa λb (b Baz/CtrB3/tag a)
+[4m[1m[33mWarnings:[0m
+[1mIn [4mtests/golden_tests/simplify_matches/already_flat.bend[0m[1m :[0m
+[1mIn definition '[4mRule4[0m[1m':[0m
+  Unreachable pattern matching rule '(Rule4 x)' (rule index 2).
+[1mIn definition '[4mRule6[0m[1m':[0m
+  Unreachable pattern matching rule '(Rule6 b)' (rule index 1).

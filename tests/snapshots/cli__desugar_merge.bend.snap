@@ -3,9 +3,12 @@ source: tests/golden_tests.rs
 input_file: tests/golden_tests/cli/desugar_merge.bend
 ---
 [4m[1m[33mWarnings:[0m
+[1mIn [4mtests/golden_tests/cli/desugar_merge.bend[0m[1m :[0m
 [1mIn definition '[4mZ[0m[1m':[0m
   Definition is unused.
 
+unchecked F__M_Z: _
 (F__M_Z) = λ* λa a
 
-(main) = F__M_Z
+unchecked main: Any
+(main) = λ* λa a

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::{
   diagnostics::Diagnostics,
-  fun::{Adts, Constructors, Ctx, Definition, Name, Pattern, Rule, Term},
+  fun::{Adts, Constructors, Ctx, Definition, Name, Pattern, Rule, Source, Term},
   maybe_grow,
 };
 
@@ -28,16 +28,23 @@ impl Ctx<'_> {
   /// }
   /// ```
   pub fn desugar_fold(&mut self) -> Result<(), Diagnostics> {
-    self.info.start_pass();
-
     let mut new_defs = vec![];
     for def in self.book.defs.values_mut() {
       let mut fresh = 0;
       for rule in def.rules.iter_mut() {
-        let res =
-          rule.body.desugar_fold(&def.name, &mut fresh, &mut new_defs, &self.book.ctrs, &self.book.adts);
+        let mut ctx = DesugarFoldCtx {
+          def_name: &def.name,
+          fresh: &mut fresh,
+          new_defs: &mut new_defs,
+          ctrs: &self.book.ctrs,
+          adts: &self.book.adts,
+          source: def.source.clone(),
+          check: def.check,
+        };
+
+        let res = rule.body.desugar_fold(&mut ctx);
         if let Err(e) = res {
-          self.info.add_rule_error(e, def.name.clone());
+          self.info.add_function_error(e, def.name.clone(), def.source.clone());
         }
       }
     }
@@ -48,18 +55,21 @@ impl Ctx<'_> {
   }
 }
 
+struct DesugarFoldCtx<'a> {
+  pub def_name: &'a Name,
+  pub fresh: &'a mut usize,
+  pub new_defs: &'a mut Vec<Definition>,
+  pub ctrs: &'a Constructors,
+  pub adts: &'a Adts,
+  pub source: Source,
+  pub check: bool,
+}
+
 impl Term {
-  pub fn desugar_fold(
-    &mut self,
-    def_name: &Name,
-    fresh: &mut usize,
-    new_defs: &mut Vec<Definition>,
-    ctrs: &Constructors,
-    adts: &Adts,
-  ) -> Result<(), String> {
+  fn desugar_fold(&mut self, ctx: &mut DesugarFoldCtx<'_>) -> Result<(), String> {
     maybe_grow(|| {
       for child in self.children_mut() {
-        child.desugar_fold(def_name, fresh, new_defs, ctrs, adts)?;
+        child.desugar_fold(ctx)?;
       }
 
       if let Term::Fold { .. } = self {
@@ -67,7 +77,7 @@ impl Term {
         if self.has_unscoped_diff() {
           return Err("Can't have non self-contained unscoped variables in a 'fold'".into());
         }
-        let Term::Fold { bnd: _, arg, with, arms } = self else { unreachable!() };
+        let Term::Fold { bnd: _, arg, with_bnd, with_arg, arms } = self else { unreachable!() };
 
         // Gather the free variables
         let mut free_vars = HashSet::new();
@@ -78,24 +88,24 @@ impl Term {
           }
           free_vars.extend(arm_free_vars);
         }
-        for var in with.iter() {
+        for var in with_bnd.iter().flatten() {
           free_vars.remove(var);
         }
         let free_vars = free_vars.into_iter().collect::<Vec<_>>();
 
-        let new_nam = Name::new(format!("{}__fold{}", def_name, fresh));
-        *fresh += 1;
+        let new_nam = Name::new(format!("{}__fold{}", ctx.def_name, ctx.fresh));
+        *ctx.fresh += 1;
 
         // Substitute the implicit recursive calls to call the new function
         let ctr = arms[0].0.as_ref().unwrap();
-        let adt_nam = ctrs.get(ctr).unwrap();
-        let ctrs = &adts.get(adt_nam).unwrap().ctrs;
+        let adt_nam = ctx.ctrs.get(ctr).unwrap();
+        let ctrs = &ctx.adts.get(adt_nam).unwrap().ctrs;
         for arm in arms.iter_mut() {
           let ctr = arm.0.as_ref().unwrap();
           let recursive = arm
             .1
             .iter()
-            .zip(ctrs.get(ctr).unwrap())
+            .zip(&ctrs.get(ctr).unwrap().fields)
             .filter_map(|(var, field)| if field.rec { Some(var.as_ref().unwrap().clone()) } else { None })
             .collect::<HashSet<_>>();
           arm.2.call_recursive(&new_nam, &recursive, &free_vars);
@@ -103,27 +113,29 @@ impl Term {
 
         // Create the new function
         let x_nam = Name::new("%x");
-        let mut body = Term::Mat {
+        let body = Term::Mat {
           arg: Box::new(Term::Var { nam: x_nam.clone() }),
           bnd: None,
-          with: with.clone(),
+          with_bnd: with_bnd.clone(),
+          with_arg: with_bnd.iter().map(|nam| Term::var_or_era(nam.clone())).collect(),
           arms: std::mem::take(arms),
         };
-        for nam in with.iter().rev() {
-          body = Term::lam(Pattern::Var(Some(nam.clone())), body);
-        }
-        for nam in free_vars.iter().rev() {
-          body = Term::lam(Pattern::Var(Some(nam.clone())), body);
-        }
-        body = Term::lam(Pattern::Var(Some(x_nam)), body);
-        let def =
-          Definition { name: new_nam.clone(), rules: vec![Rule { pats: vec![], body }], builtin: false };
-        new_defs.push(def);
+        let body = Term::rfold_lams(body, with_bnd.iter().cloned());
+        let body = Term::rfold_lams(body, free_vars.iter().map(|nam| Some(nam.clone())));
+        let body = Term::lam(Pattern::Var(Some(x_nam)), body);
+
+        let def = Definition::new_gen(
+          new_nam.clone(),
+          vec![Rule { pats: vec![], body }],
+          ctx.source.clone(),
+          ctx.check,
+        );
+        ctx.new_defs.push(def);
 
         // Call the new function
         let call = Term::call(Term::Ref { nam: new_nam.clone() }, [std::mem::take(arg.as_mut())]);
         let call = Term::call(call, free_vars.iter().cloned().map(|nam| Term::Var { nam }));
-        let call = Term::call(call, with.iter().cloned().map(|nam| Term::Var { nam }));
+        let call = Term::call(call, with_arg.iter().cloned());
         *self = call;
       }
       Ok(())
@@ -137,12 +149,12 @@ impl Term {
       }
 
       // If we found a recursive field, replace with a call to the new function.
-      if let Term::Var { nam } = self
-        && recursive.contains(nam)
-      {
-        let call = Term::call(Term::Ref { nam: def_name.clone() }, [std::mem::take(self)]);
-        let call = Term::call(call, free_vars.iter().cloned().map(|nam| Term::Var { nam }));
-        *self = call;
+      if let Term::Var { nam } = self {
+        if recursive.contains(nam) {
+          let call = Term::call(Term::Ref { nam: def_name.clone() }, [std::mem::take(self)]);
+          let call = Term::call(call, free_vars.iter().cloned().map(|nam| Term::Var { nam }));
+          *self = call;
+        }
       }
     })
   }
